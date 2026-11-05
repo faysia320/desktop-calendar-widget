@@ -16,6 +16,12 @@ pub struct CachedEvents {
     fetched_at: String,
 }
 
+impl CachedEvents {
+    pub fn into_events(self) -> Vec<CalendarEvent> {
+        self.events
+    }
+}
+
 /// 마지막으로 가져온 일정을 달력 범위별로 저장합니다.
 pub struct EventCache {
     path: PathBuf,
@@ -111,6 +117,10 @@ mod tests {
             end: "2026-11-05 10:00".to_string(),
             all_day: false,
             location: None,
+            calendar_id: None,
+            color: None,
+            text_color: None,
+            editable: false,
         }
     }
 
@@ -125,6 +135,21 @@ mod tests {
         assert_eq!(loaded.events[0].title, "회의");
         assert!(cache.load(Provider::Microsoft, "2026-11-01", "2026-12-06").is_none());
         assert!(cache.load(Provider::Google, "2026-12-01", "2027-01-03").is_none());
+    }
+
+    #[test]
+    fn entries_saved_before_calendar_fields_still_load() {
+        let cache = temp_cache("old-format");
+        std::fs::create_dir_all(cache.path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache.path,
+            r#"{"google|a|b":{"events":[{"id":"1","title":"회의","start":"2026-11-05","end":"2026-11-06","all_day":true,"location":null}],"fetched_at":"2026-11-05 09:00:00"}}"#,
+        )
+        .unwrap();
+
+        let events = cache.load(Provider::Google, "a", "b").unwrap().into_events();
+        assert_eq!(events[0].title, "회의");
+        assert!(!events[0].editable);
     }
 
     #[test]

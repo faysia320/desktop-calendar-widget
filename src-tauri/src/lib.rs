@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
 use event_cache::{CachedEvents, EventCache};
-use oauth::{CalendarEvent, NewEvent, Provider, ProviderStatus};
+use oauth::{CalendarEvent, GoogleCalendar, NewEvent, Provider, ProviderStatus};
 use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl,
@@ -24,6 +24,7 @@ const EDITOR_LABEL: &str = "event-editor";
 const ENV_FILE: &str = ".env.local";
 const POSITION_FILE: &str = "window-position.json";
 const EVENT_CACHE_FILE: &str = "event-cache.json";
+const HOLIDAY_CACHE_FILE: &str = "holiday-cache.json";
 const POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 // 창 왼쪽 위 모서리만 걸친 위치로 복원되어 위젯을 잡을 수 없게 되는 것을 막습니다.
 const MIN_VISIBLE_PX: i32 = 100;
@@ -31,6 +32,9 @@ const DESKTOP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const DESKTOP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 // Explorer가 Progman을 만든 직후에는 자식 창이 아직 준비되지 않아 잠시 기다립니다.
 const DESKTOP_SETTLE_DELAY: Duration = Duration::from_secs(2);
+
+// 일정 캐시의 용량을 차지하지 않도록 공휴일은 별도 파일에 Google 항목으로 저장합니다.
+struct HolidayCache(EventCache);
 
 #[derive(Default)]
 struct WidgetState {
@@ -294,6 +298,36 @@ async fn fetch_events(
     Ok(events)
 }
 
+// 공휴일은 부가 정보라 받아 오지 못하면 저장된 값을 보여 주고 오류는 띄우지 않습니다.
+#[tauri::command]
+async fn holidays(
+    cache: State<'_, HolidayCache>,
+    from: String,
+    to: String,
+) -> Result<Vec<CalendarEvent>, String> {
+    match oauth::fetch_holidays(&from, &to).await {
+        Ok(holidays) => {
+            if let Err(error) = cache.0.store(Provider::Google, &from, &to, holidays.clone()) {
+                eprintln!("공휴일 캐시 저장 실패: {error}");
+            }
+            Ok(holidays)
+        }
+        Err(error) => {
+            eprintln!("공휴일 조회 실패: {error}");
+            Ok(cache
+                .0
+                .load(Provider::Google, &from, &to)
+                .map(|cached| cached.into_events())
+                .unwrap_or_default())
+        }
+    }
+}
+
+#[tauri::command]
+async fn google_calendars() -> Result<Vec<GoogleCalendar>, String> {
+    oauth::google_calendars().await
+}
+
 #[tauri::command]
 async fn create_google_event(app: AppHandle, event: NewEvent) -> Result<CalendarEvent, String> {
     let created = oauth::create_google_event(&event).await?;
@@ -302,25 +336,103 @@ async fn create_google_event(app: AppHandle, event: NewEvent) -> Result<Calendar
     Ok(created)
 }
 
+#[tauri::command]
+async fn google_event(calendar_id: String, event_id: String) -> Result<CalendarEvent, String> {
+    oauth::google_event(&calendar_id, &event_id).await
+}
+
+#[tauri::command]
+async fn update_google_event(
+    app: AppHandle,
+    event_id: String,
+    event: NewEvent,
+) -> Result<CalendarEvent, String> {
+    let updated = oauth::update_google_event(&event_id, &event).await?;
+    app.emit("events-changed", ())
+        .map_err(|error| error.to_string())?;
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn delete_google_event(
+    app: AppHandle,
+    calendar_id: String,
+    event_id: String,
+) -> Result<(), String> {
+    oauth::delete_google_event(&calendar_id, &event_id).await?;
+    app.emit("events-changed", ())
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditorTarget {
+    calendar_id: String,
+    event_id: String,
+}
+
+// 위젯이 있는 모니터의 가운데에 둡니다. 배율이 다른 모니터로 옮기면 창 크기도 바뀌므로
+// 먼저 그 모니터로 옮긴 뒤 크기를 읽습니다.
+fn center_on_widget_monitor(app: &AppHandle, window: &WebviewWindow) -> Option<()> {
+    let area = desktop_pin::work_area(&app.get_webview_window(MAIN_LABEL)?)?;
+    window
+        .set_position(PhysicalPosition::new(area.left, area.top))
+        .ok()?;
+    let size = window.outer_size().ok()?;
+    let x = area.left + (area.right - area.left - size.width as i32) / 2;
+    let y = area.top + (area.bottom - area.top - size.height as i32) / 2;
+    window.set_position(PhysicalPosition::new(x, y)).ok()
+}
+
 // 위젯 창은 키보드 입력을 받지 않으므로 일정 입력은 별도 창에서 받습니다.
 // Windows에서 동기 명령으로 창을 만들면 교착될 수 있어 async로 둡니다.
 #[tauri::command]
-async fn open_event_editor(app: AppHandle, date: String) -> Result<(), String> {
+async fn open_event_editor(
+    app: AppHandle,
+    date: String,
+    target: Option<EditorTarget>,
+) -> Result<(), String> {
+    let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|error| error.to_string())?;
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("date", &date.to_string());
+    let title = match &target {
+        Some(target) => {
+            query
+                .append_pair("view", "edit-event")
+                .append_pair("calendarId", &target.calendar_id)
+                .append_pair("eventId", &target.event_id);
+            "일정 편집"
+        }
+        None => {
+            query.append_pair("view", "new-event");
+            "일정 추가"
+        }
+    };
+    let query = query.finish();
+
+    // 다른 일정을 고르면 열려 있는 창의 내용을 그 일정으로 바꿉니다.
     if let Some(window) = app.get_webview_window(EDITOR_LABEL) {
+        let mut url = window.url().map_err(|error| error.to_string())?;
+        if url.query() != Some(query.as_str()) {
+            url.set_query(Some(&query));
+            window.navigate(url).map_err(|error| error.to_string())?;
+            window.set_title(title).map_err(|error| error.to_string())?;
+        }
         return window.set_focus().map_err(|error| error.to_string());
     }
-    let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|error| error.to_string())?;
-    let url = format!("index.html?view=new-event&date={date}");
-    WebviewWindowBuilder::new(&app, EDITOR_LABEL, WebviewUrl::App(url.into()))
-        .title("일정 추가")
-        .inner_size(420.0, 400.0)
+    let url = format!("index.html?{query}");
+    let window = WebviewWindowBuilder::new(&app, EDITOR_LABEL, WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(420.0, 470.0)
         .resizable(false)
-        .center()
+        .visible(false)
         .always_on_top(true)
         .focused(true)
         .build()
         .map_err(|error| error.to_string())?;
-    Ok(())
+    center_on_widget_monitor(&app, &window);
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -367,6 +479,9 @@ pub fn run() {
             app.manage(EventCache::new(
                 app.path().app_local_data_dir()?.join(EVENT_CACHE_FILE),
             ));
+            app.manage(HolidayCache(EventCache::new(
+                app.path().app_local_data_dir()?.join(HOLIDAY_CACHE_FILE),
+            )));
 
             let was_maximized = restore_position(app.handle()).unwrap_or(false);
             if desktop_pin::desktop_ready() {
@@ -414,7 +529,12 @@ pub fn run() {
             connect,
             cached_events,
             fetch_events,
+            holidays,
+            google_calendars,
             create_google_event,
+            google_event,
+            update_google_event,
+            delete_google_event,
             open_event_editor
         ])
         .build(tauri::generate_context!())

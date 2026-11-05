@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use base64::Engine;
@@ -22,7 +23,13 @@ const MAX_REQUEST_BYTES: usize = 8192;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const GOOGLE_PAGE_SIZE: &str = "250";
 const GRAPH_PAGE_SIZE: &str = "100";
-const GOOGLE_EVENTS_URL: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GOOGLE_CALENDARS_URL: &str = "https://www.googleapis.com/calendar/v3/calendars";
+const GOOGLE_CALENDAR_LIST_URL: &str =
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList";
+const KOREAN_HOLIDAY_CALENDAR: &str = "ko.south_korea#holiday@group.v.calendar.google.com";
+const HOLIDAY_CALENDAR_SUFFIX: &str = "#holiday@group.v.calendar.google.com";
+// 휴일 캘린더의 설명은 "공휴일" 또는 "기념일"로 시작합니다.
+const PUBLIC_HOLIDAY_PREFIX: &str = "공휴일";
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -58,7 +65,7 @@ impl Provider {
                     .filter(|secret| !secret.is_empty()),
                 auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
                 token_url: "https://oauth2.googleapis.com/token",
-                scope: "https://www.googleapis.com/auth/calendar.events",
+                scope: "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly",
                 redirect_host: "127.0.0.1",
                 extra_auth_params: &[("access_type", "offline"), ("prompt", "consent")],
             }),
@@ -97,11 +104,21 @@ pub struct CalendarEvent {
     pub(crate) end: String,
     pub(crate) all_day: bool,
     pub(crate) location: Option<String>,
+    // 예전 캐시 파일에는 없는 값들이고, Outlook 일정은 비어 있습니다.
+    #[serde(default)]
+    pub(crate) calendar_id: Option<String>,
+    #[serde(default)]
+    pub(crate) color: Option<String>,
+    #[serde(default)]
+    pub(crate) text_color: Option<String>,
+    #[serde(default)]
+    pub(crate) editable: bool,
 }
 
 /// 시각이 없으면 종일 일정이며, 종일 일정의 종료일은 마지막 날을 포함합니다.
 #[derive(Deserialize)]
 pub struct NewEvent {
+    calendar_id: String,
     title: String,
     start_date: String,
     end_date: String,
@@ -327,10 +344,7 @@ async fn access_token(provider: Provider) -> Result<String, String> {
         if !is_expired_login(&error) {
             return error;
         }
-        // 다시 쓸 수 없는 토큰을 지워 화면에 로그인 버튼이 나오게 합니다.
-        if let Ok(entry) = keyring_entry(provider) {
-            let _ = entry.delete_credential();
-        }
+        forget_login(provider);
         "로그인이 만료되었습니다. 다시 로그인해 주세요.".to_string()
     })?;
     if let Some(rotated) = &token.refresh_token {
@@ -339,8 +353,19 @@ async fn access_token(provider: Provider) -> Result<String, String> {
     Ok(token.access_token)
 }
 
+// 다시 쓸 수 없는 토큰을 지워 화면에 로그인 버튼이 나오게 합니다.
+fn forget_login(provider: Provider) {
+    if let Ok(entry) = keyring_entry(provider) {
+        let _ = entry.delete_credential();
+    }
+}
+
 fn is_expired_login(token_error: &str) -> bool {
     token_error.contains("invalid_grant")
+}
+
+fn is_missing_scope(request_error: &str) -> bool {
+    request_error.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
 }
 
 fn parse_date(value: &str) -> Result<NaiveDate, String> {
@@ -378,23 +403,84 @@ pub async fn create_google_event(event: &NewEvent) -> Result<CalendarEvent, Stri
     let body = google_event_body(event)?;
     let access_token = access_token(Provider::Google).await?;
 
-    let response = http_client()?
-        .post(GOOGLE_EVENTS_URL)
+    let request = http_client()?
+        .post(google_events_url(&event.calendar_id)?)
         .bearer_auth(&access_token)
-        .json(&body)
+        .json(&body);
+    send_event_request(request, "일정 등록").await
+}
+
+pub async fn google_event(calendar_id: &str, event_id: &str) -> Result<CalendarEvent, String> {
+    let access_token = access_token(Provider::Google).await?;
+    let url = google_event_url(calendar_id, event_id)?;
+    let event: GoogleEvent = get_json(url.as_str(), &access_token, &[]).await?;
+    Ok(event.into())
+}
+
+// 참석자처럼 입력받지 않는 값이 지워지지 않도록 PUT 대신 PATCH로 바꿉니다.
+pub async fn update_google_event(event_id: &str, event: &NewEvent) -> Result<CalendarEvent, String> {
+    let body = google_patch_body(event)?;
+    let access_token = access_token(Provider::Google).await?;
+
+    let request = http_client()?
+        .patch(google_event_url(&event.calendar_id, event_id)?)
+        .bearer_auth(&access_token)
+        .json(&body);
+    send_event_request(request, "일정 수정").await
+}
+
+pub async fn delete_google_event(calendar_id: &str, event_id: &str) -> Result<(), String> {
+    let access_token = access_token(Provider::Google).await?;
+    let response = http_client()?
+        .delete(google_event_url(calendar_id, event_id)?)
+        .bearer_auth(&access_token)
         .send()
         .await
-        .map_err(|error| request_error("일정 등록", error))?;
+        .map_err(|error| request_error("일정 삭제", error))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("일정 등록 실패({status}): {body}"));
+        return Err(format!("일정 삭제 실패({status}): {body}"));
     }
-    let created: GoogleEvent = response
+    Ok(())
+}
+
+async fn send_event_request(
+    request: reqwest::RequestBuilder,
+    action: &str,
+) -> Result<CalendarEvent, String> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| request_error(action, error))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("{action} 실패({status}): {body}"));
+    }
+    let event: GoogleEvent = response
         .json()
         .await
         .map_err(|error| format!("일정 응답 해석 실패: {error}"))?;
-    Ok(created.into())
+    Ok(event.into())
+}
+
+// PATCH는 보내지 않은 값을 유지하므로 종일과 시간 일정을 오갈 때 이전 값과 비운 장소를 명시해 지웁니다.
+fn google_patch_body(event: &NewEvent) -> Result<serde_json::Value, String> {
+    let mut body = google_event_body(event)?;
+    for edge in ["start", "end"] {
+        let time = &mut body[edge];
+        if time.get("date").is_some() {
+            time["dateTime"] = serde_json::Value::Null;
+            time["timeZone"] = serde_json::Value::Null;
+        } else {
+            time["date"] = serde_json::Value::Null;
+        }
+    }
+    if body.get("location").is_none() {
+        body["location"] = serde_json::Value::Null;
+    }
+    Ok(body)
 }
 
 fn google_event_body(event: &NewEvent) -> Result<serde_json::Value, String> {
@@ -482,6 +568,7 @@ struct GoogleEvents {
 struct GoogleEvent {
     id: String,
     summary: Option<String>,
+    description: Option<String>,
     location: Option<String>,
     start: GoogleTime,
     end: GoogleTime,
@@ -496,6 +583,10 @@ impl From<GoogleEvent> for CalendarEvent {
             start: event.start.display(),
             end: event.end.display(),
             location: event.location,
+            calendar_id: None,
+            color: None,
+            text_color: None,
+            editable: false,
         }
     }
 }
@@ -518,11 +609,169 @@ impl GoogleTime {
     }
 }
 
+fn google_events_url(calendar_id: &str) -> Result<Url, String> {
+    let mut url = Url::parse(GOOGLE_CALENDARS_URL).map_err(|error| error.to_string())?;
+    url.path_segments_mut()
+        .map_err(|_| "캘린더 주소를 만들 수 없습니다.".to_string())?
+        .push(calendar_id)
+        .push("events");
+    Ok(url)
+}
+
+fn google_event_url(calendar_id: &str, event_id: &str) -> Result<Url, String> {
+    let mut url = google_events_url(calendar_id)?;
+    url.path_segments_mut()
+        .map_err(|_| "일정 주소를 만들 수 없습니다.".to_string())?
+        .push(event_id);
+    Ok(url)
+}
+
+#[derive(Deserialize)]
+struct GoogleCalendarList {
+    #[serde(default)]
+    items: Vec<GoogleCalendarEntry>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleCalendarEntry {
+    id: String,
+    summary: Option<String>,
+    summary_override: Option<String>,
+    access_role: String,
+    background_color: Option<String>,
+    foreground_color: Option<String>,
+    #[serde(default)]
+    primary: bool,
+    #[serde(default)]
+    selected: bool,
+}
+
+impl GoogleCalendarEntry {
+    // Google 캘린더에서 표시하도록 체크한 캘린더만 보여 줍니다. 휴일은 달력에 따로 표시합니다.
+    fn is_shown(&self) -> bool {
+        (self.selected || self.primary)
+            && self.access_role != "freeBusyReader"
+            && !self.id.ends_with(HOLIDAY_CALENDAR_SUFFIX)
+    }
+
+    fn is_writable(&self) -> bool {
+        matches!(self.access_role.as_str(), "owner" | "writer")
+    }
+
+    fn event_from(&self, event: GoogleEvent) -> CalendarEvent {
+        CalendarEvent {
+            calendar_id: Some(self.id.clone()),
+            color: self.background_color.clone(),
+            text_color: self.foreground_color.clone(),
+            editable: self.is_writable(),
+            ..event.into()
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct GoogleCalendar {
+    id: String,
+    name: String,
+    primary: bool,
+}
+
+async fn google_calendar_entries(access_token: &str) -> Result<Vec<GoogleCalendarEntry>, String> {
+    let mut entries = Vec::new();
+    let mut page_token = None;
+    loop {
+        let query: Vec<(&str, String)> = page_token.map(|token| ("pageToken", token)).into_iter().collect();
+        let page: GoogleCalendarList = get_json(GOOGLE_CALENDAR_LIST_URL, access_token, &query)
+            .await
+            .map_err(|error| {
+                if !is_missing_scope(&error) {
+                    return error;
+                }
+                // 캘린더 목록 권한이 없던 때의 토큰이면 다시 동의를 받아야 합니다.
+                forget_login(Provider::Google);
+                "캘린더 목록 권한이 필요합니다. 다시 로그인해 주세요.".to_string()
+            })?;
+        entries.extend(page.items);
+        page_token = page.next_page_token;
+        if page_token.is_none() {
+            return Ok(entries);
+        }
+    }
+}
+
+/// 일정을 추가할 수 있는 캘린더를 기본 캘린더부터 돌려줍니다.
+pub async fn google_calendars() -> Result<Vec<GoogleCalendar>, String> {
+    let access_token = access_token(Provider::Google).await?;
+    let mut calendars: Vec<GoogleCalendar> = google_calendar_entries(&access_token)
+        .await?
+        .into_iter()
+        .filter(GoogleCalendarEntry::is_writable)
+        .map(|entry| GoogleCalendar {
+            name: entry
+                .summary_override
+                .or(entry.summary)
+                .unwrap_or_else(|| entry.id.clone()),
+            id: entry.id,
+            primary: entry.primary,
+        })
+        .collect();
+    calendars.sort_by_key(|calendar| !calendar.primary);
+    Ok(calendars)
+}
+
+/// `from`부터 `to` 전날까지의 대한민국 공휴일을 가져옵니다. 기념일은 제외합니다.
+pub async fn fetch_holidays(from: &str, to: &str) -> Result<Vec<CalendarEvent>, String> {
+    let start = local_midnight(parse_date(from)?)?;
+    let end = local_midnight(parse_date(to)?)?;
+    let access_token = access_token(Provider::Google).await?;
+    let events = fetch_google_calendar(&access_token, KOREAN_HOLIDAY_CALENDAR, start, end).await?;
+    Ok(public_holidays(events))
+}
+
+fn public_holidays(events: Vec<GoogleEvent>) -> Vec<CalendarEvent> {
+    events
+        .into_iter()
+        .filter(|event| {
+            event
+                .description
+                .as_deref()
+                .is_some_and(|description| description.starts_with(PUBLIC_HOLIDAY_PREFIX))
+        })
+        .map(CalendarEvent::from)
+        .collect()
+}
+
 async fn fetch_google(
     access_token: &str,
     start: DateTime<Local>,
     end: DateTime<Local>,
 ) -> Result<Vec<CalendarEvent>, String> {
+    let mut events = Vec::new();
+    // 같은 일정이 공유된 여러 캘린더에 있으면 한 번만 보여 줍니다.
+    let mut seen = HashSet::new();
+    for calendar in google_calendar_entries(access_token).await? {
+        if !calendar.is_shown() {
+            continue;
+        }
+        for event in fetch_google_calendar(access_token, &calendar.id, start, end).await? {
+            if seen.insert(event.id.clone()) {
+                events.push(calendar.event_from(event));
+            }
+        }
+    }
+    Ok(events)
+}
+
+async fn fetch_google_calendar(
+    access_token: &str,
+    calendar_id: &str,
+    start: DateTime<Local>,
+    end: DateTime<Local>,
+) -> Result<Vec<GoogleEvent>, String> {
+    let url = google_events_url(calendar_id)?;
     let mut events = Vec::new();
     let mut page_token = None;
     loop {
@@ -536,8 +785,8 @@ async fn fetch_google(
         if let Some(token) = page_token {
             query.push(("pageToken", token));
         }
-        let page: GoogleEvents = get_json(GOOGLE_EVENTS_URL, access_token, &query).await?;
-        events.extend(page.items.into_iter().map(CalendarEvent::from));
+        let page: GoogleEvents = get_json(url.as_str(), access_token, &query).await?;
+        events.extend(page.items);
         page_token = page.next_page_token;
         if page_token.is_none() {
             return Ok(events);
@@ -618,6 +867,10 @@ async fn fetch_microsoft(
                 .location
                 .and_then(|location| location.display_name)
                 .filter(|name| !name.is_empty()),
+            calendar_id: None,
+            color: None,
+            text_color: None,
+            editable: false,
         }));
         let Some(next_link) = page.next_link else {
             return Ok(events);
@@ -695,6 +948,7 @@ mod tests {
 
     fn new_event(start_time: Option<&str>, end_time: Option<&str>, end_date: &str) -> NewEvent {
         NewEvent {
+            calendar_id: "primary".to_string(),
             title: " 회의 ".to_string(),
             start_date: "2026-11-05".to_string(),
             end_date: end_date.to_string(),
@@ -713,6 +967,108 @@ mod tests {
         assert!(!is_expired_login(
             r#"토큰 요청 실패(401 Unauthorized): {"error": "invalid_client"}"#
         ));
+    }
+
+    #[test]
+    fn events_url_encodes_calendar_id() {
+        let url = google_events_url(KOREAN_HOLIDAY_CALENDAR).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://www.googleapis.com/calendar/v3/calendars/ko.south_korea%23holiday@group.v.calendar.google.com/events"
+        );
+    }
+
+    #[test]
+    fn only_public_holidays_are_kept() {
+        let events: Vec<GoogleEvent> = serde_json::from_str(
+            r#"[
+                {"id":"a","summary":"개천절","description":"공휴일\n설명","start":{"date":"2026-10-03"},"end":{"date":"2026-10-04"}},
+                {"id":"b","summary":"국군의날","description":"기념일\n설명","start":{"date":"2026-10-01"},"end":{"date":"2026-10-02"}},
+                {"id":"c","summary":"설명 없음","start":{"date":"2026-10-05"},"end":{"date":"2026-10-06"}}
+            ]"#,
+        )
+        .unwrap();
+        let holidays = public_holidays(events);
+        assert_eq!(holidays.len(), 1);
+        assert_eq!(holidays[0].title, "개천절");
+        assert!(holidays[0].all_day);
+    }
+
+    #[test]
+    fn shown_and_writable_calendars_follow_list_fields() {
+        let entry = |id: &str, role: &str, primary: bool, selected: bool| GoogleCalendarEntry {
+            id: id.to_string(),
+            summary: None,
+            summary_override: None,
+            access_role: role.to_string(),
+            background_color: None,
+            foreground_color: None,
+            primary,
+            selected,
+        };
+        assert!(entry("me", "owner", true, false).is_shown());
+        assert!(entry("shared", "reader", false, true).is_shown());
+        assert!(!entry("hidden", "owner", false, false).is_shown());
+        assert!(!entry("busy", "freeBusyReader", false, true).is_shown());
+        assert!(!entry(KOREAN_HOLIDAY_CALENDAR, "reader", false, true).is_shown());
+
+        assert!(entry("me", "owner", true, true).is_writable());
+        assert!(entry("team", "writer", false, true).is_writable());
+        assert!(!entry("shared", "reader", false, true).is_writable());
+    }
+
+    #[test]
+    fn events_carry_their_calendar_color_and_permission() {
+        let calendar: GoogleCalendarEntry = serde_json::from_str(
+            r##"{"id":"team","accessRole":"writer","backgroundColor":"#16a765","foregroundColor":"#000000"}"##,
+        )
+        .unwrap();
+        let event: GoogleEvent = serde_json::from_str(
+            r#"{"id":"a","summary":"회의","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}}"#,
+        )
+        .unwrap();
+        let event = calendar.event_from(event);
+        assert_eq!(event.calendar_id.as_deref(), Some("team"));
+        assert_eq!(event.color.as_deref(), Some("#16a765"));
+        assert_eq!(event.text_color.as_deref(), Some("#000000"));
+        assert!(event.editable);
+    }
+
+    #[test]
+    fn event_url_encodes_ids() {
+        let url = google_event_url("a#b@group.calendar.google.com", "ev/1").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://www.googleapis.com/calendar/v3/calendars/a%23b@group.calendar.google.com/events/ev%2F1"
+        );
+    }
+
+    #[test]
+    fn patch_body_clears_values_replaced_by_the_edit() {
+        let all_day = google_patch_body(&new_event(None, None, "2026-11-05")).unwrap();
+        assert_eq!(all_day["start"]["date"], "2026-11-05");
+        assert!(all_day["start"]["dateTime"].is_null() && all_day["start"].get("dateTime").is_some());
+        assert!(all_day["end"].get("timeZone").is_some());
+        assert!(all_day.get("location").is_some() && all_day["location"].is_null());
+
+        let timed =
+            google_patch_body(&new_event(Some("09:00"), Some("10:00"), "2026-11-05")).unwrap();
+        assert!(timed["start"]["dateTime"].is_string());
+        assert!(timed["start"].get("date").is_some() && timed["start"]["date"].is_null());
+        // 기존 시간대를 유지합니다.
+        assert!(timed["start"].get("timeZone").is_none());
+
+        let mut with_location = new_event(None, None, "2026-11-05");
+        with_location.location = Some("회의실".to_string());
+        assert_eq!(google_patch_body(&with_location).unwrap()["location"], "회의실");
+    }
+
+    #[test]
+    fn missing_scope_is_detected_from_google_error() {
+        assert!(is_missing_scope(
+            r#"일정 요청 실패(403 Forbidden): {"error":{"details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}"#
+        ));
+        assert!(!is_missing_scope("일정 요청 실패(403 Forbidden): rateLimitExceeded"));
     }
 
     #[test]

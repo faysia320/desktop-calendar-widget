@@ -16,6 +16,7 @@ import {
   compareEvents,
   formatEventTime,
   formatFetchedAt,
+  holidayName,
   occursOn,
   toDayKey,
 } from "./events";
@@ -118,6 +119,7 @@ function useCalendarEvents(range: DayRange | null) {
   const [errors, setErrors] = useState<Partial<Record<Provider, string>>>({});
   // 저장된 일정을 보여 주는 동안 그 일정을 가져온 시각입니다.
   const [staleSince, setStaleSince] = useState<Partial<Record<Provider, string>>>({});
+  const [holidays, setHolidays] = useState<RemoteEvent[]>([]);
   const latestRequest = useRef(0);
   const shownRange = useRef("");
 
@@ -127,6 +129,10 @@ function useCalendarEvents(range: DayRange | null) {
     if (request !== latestRequest.current) return;
     setStatuses(current);
     if (!range) return;
+
+    invoke<RemoteEvent[]>("holidays", { ...range }).then((items) => {
+      if (request === latestRequest.current) setHolidays(items);
+    });
 
     const rangeKey = `${range.from}|${range.to}`;
     const isNewRange = shownRange.current !== rangeKey;
@@ -184,7 +190,7 @@ function useCalendarEvents(range: DayRange | null) {
     [eventsByProvider],
   );
 
-  return { statuses, events, errors, staleSince, setErrors, refresh };
+  return { statuses, events, holidays, errors, staleSince, setErrors, refresh };
 }
 
 // 메뉴를 닫아도 보이도록 오류와 오프라인 안내는 상세 패널에 표시합니다.
@@ -329,7 +335,7 @@ function Widget() {
   const [theme, setTheme] = useTheme();
   const [transparency, setTransparency] = useBackgroundTransparency();
   const calendarRef = useRef<FullCalendar>(null);
-  const { statuses, events, errors, staleSince, setErrors, refresh } = useCalendarEvents(range);
+  const { statuses, events, holidays, errors, staleSince, setErrors, refresh } = useCalendarEvents(range);
 
   useEffect(() => {
     invoke<WidgetStatus>("widget_status").then(setStatus);
@@ -376,6 +382,9 @@ function Widget() {
         end: event.end.replace(" ", "T"),
         allDay: event.all_day,
         classNames: [`event-${event.provider}`],
+        backgroundColor: event.color ?? undefined,
+        borderColor: event.color ?? undefined,
+        textColor: event.text_color ?? undefined,
       })),
     [events],
   );
@@ -384,6 +393,8 @@ function Widget() {
     () => events.filter((event) => occursOn(event, selectedDay)).sort(compareEvents),
     [events, selectedDay],
   );
+
+  const selectedHoliday = holidayName(holidays, selectedDay);
 
   const googleConnected = statuses.some(
     (item) => item.provider === "google" && item.configured && item.connected,
@@ -423,14 +434,32 @@ function Widget() {
               goToday: {
                 text: "",
                 hint: "오늘",
-                click: () => calendarRef.current?.getApi().today(),
+                click: () => {
+                  calendarRef.current?.getApi().today();
+                  setSelectedDay(toDayKey(new Date()));
+                },
               },
             }}
             fixedWeekCount={false}
             dayMaxEvents
             displayEventTime={false}
-            dayCellContent={(cell) => cell.dayNumberText.replace("일", "")}
-            dayCellClassNames={(cell) => (toDayKey(cell.date) === selectedDay ? ["day-selected"] : [])}
+            eventDisplay="block"
+            dayCellContent={(cell) => {
+              const holiday = holidayName(holidays, toDayKey(cell.date));
+              return (
+                <>
+                  {holiday && <span className="holiday-name">{holiday}</span>}
+                  {cell.dayNumberText.replace("일", "")}
+                </>
+              );
+            }}
+            dayCellClassNames={(cell) => {
+              const day = toDayKey(cell.date);
+              return [
+                ...(day === selectedDay ? ["day-selected"] : []),
+                ...(holidayName(holidays, day) ? ["day-holiday"] : []),
+              ];
+            }}
             events={calendarEvents}
             dateClick={(click) => setSelectedDay(click.dateStr)}
             eventClick={(click) => {
@@ -447,7 +476,10 @@ function Widget() {
 
         <aside className="details">
           <div className="details-header">
-            <h2>{selectedDay.replace(/-/g, ".")}</h2>
+            <h2>
+              {selectedDay.replace(/-/g, ".")}
+              {selectedHoliday && <span className="details-holiday">{selectedHoliday}</span>}
+            </h2>
             <button
               className="primary"
               disabled={!googleConnected}
@@ -464,12 +496,28 @@ function Widget() {
             <ul className="events">
               {dayEvents.map((event) => (
                 <li key={`${event.provider}:${event.id}`}>
-                  <span className={`dot ${event.provider}`} />
+                  <span
+                    className={`dot ${event.provider}`}
+                    style={event.color ? { background: event.color } : undefined}
+                  />
                   <div>
                     <strong>{event.title}</strong>
                     <span>{formatEventTime(event)}</span>
                     {event.location && <span>{event.location}</span>}
                   </div>
+                  {event.editable && (
+                    <button
+                      className="event-edit"
+                      onClick={() =>
+                        invoke("open_event_editor", {
+                          date: selectedDay,
+                          target: { calendarId: event.calendar_id, eventId: event.id },
+                        })
+                      }
+                    >
+                      편집
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -489,8 +537,14 @@ function Widget() {
 
 function App() {
   const params = new URLSearchParams(window.location.search);
-  if (params.get("view") === "new-event") {
-    return <EventEditor date={params.get("date") ?? toDayKey(new Date())} />;
+  const date = params.get("date") ?? toDayKey(new Date());
+  const view = params.get("view");
+  if (view === "new-event") {
+    return <EventEditor date={date} />;
+  }
+  if (view === "edit-event") {
+    const target = { calendarId: params.get("calendarId") ?? "", eventId: params.get("eventId") ?? "" };
+    return <EventEditor date={date} target={target} />;
   }
   return <Widget />;
 }
