@@ -1,34 +1,57 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --background: #f5f6f8;
   --surface: #ffffff;
   --text: #1f2328;
   --muted: #5d6673;
   --border: #d5dae1;
   --accent: #1a5fb4;
-  --accent-text: #ffffff;
   --selected: #dbe8f8;
   --error: #b3261e;
   --google: #1a73e8;
   --microsoft: #b45309;
-  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+  /* 흰 글자를 올리는 배경이라 테마와 상관없이 진한 색을 씁니다. */
+  --accent-fill: #1a5fb4;
+  --google-fill: #1a73e8;
+  --microsoft-fill: #b45309;
+  --background-opacity: 1;
+  --translucent-background: color-mix(in srgb, var(--background) calc(var(--background-opacity) * 100%), transparent);
+  --translucent-surface: color-mix(in srgb, var(--surface) calc(var(--background-opacity) * 100%), transparent);
+  --translucent-selected: color-mix(in srgb, var(--selected) calc(var(--background-opacity) * 100%), transparent);
+  /* 흰 글자가 배경화면에 묻히지 않도록 강조 버튼은 최소한의 배경을 남깁니다. */
+  --translucent-accent: color-mix(in srgb, var(--accent-fill) calc(max(var(--background-opacity), 0.35) * 100%), transparent);
+  font-family: "Pretendard Variable", "Segoe UI", "Malgun Gothic", sans-serif;
   font-size: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --background: #1d2025;
     --surface: #282c33;
     --text: #eceef1;
     --muted: #a5adb8;
     --border: #3d434d;
     --accent: #7fb2f0;
-    --accent-text: #10243d;
     --selected: #2c3e57;
     --error: #f2a29c;
     --google: #5b9df0;
     --microsoft: #e09a4f;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #1d2025;
+  --surface: #282c33;
+  --text: #eceef1;
+  --muted: #a5adb8;
+  --border: #3d434d;
+  --accent: #7fb2f0;
+  --selected: #2c3e57;
+  --error: #f2a29c;
+  --google: #5b9df0;
+  --microsoft: #e09a4f;
 }
 
 * {
@@ -37,7 +60,6 @@
 
 body {
   margin: 0;
-  background: var(--background);
   color: var(--text);
 }
 
@@ -45,16 +67,16 @@ button {
   padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface);
+  background: var(--translucent-surface);
   color: var(--text);
   font: inherit;
   cursor: pointer;
 }
 
 button.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-text);
+  border-color: var(--accent-fill);
+  background: var(--translucent-accent);
+  color: #ffffff;
 }
 
 button:disabled {
@@ -89,18 +111,8 @@ h2 {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 0 14px 14px;
-}
-
-.titlebar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 0;
-}
-
-.titlebar h1 {
-  flex: 1;
+  padding: 14px;
+  background: var(--translucent-background);
 }
 
 .layout {
@@ -111,13 +123,109 @@ h2 {
   min-height: 0;
 }
 
+.calendar {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  top: 48px;
+  left: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--background);
+}
+
+.menu-item:disabled {
+  opacity: 1;
+}
+
+.menu-item .dot {
+  margin-top: 0;
+}
+
+.menu-label {
+  flex: 1;
+}
+
+.menu-divider {
+  width: 100%;
+  margin: 4px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.menu-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 10px;
+}
+
+.theme-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.theme-options button {
+  padding: 3px 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.theme-options button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--selected);
+}
+
+.menu-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 10px;
+}
+
+.menu-slider-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.menu-slider input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .calendar,
 .details {
   min-height: 0;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--translucent-surface);
 }
 
 .details {
@@ -183,41 +291,31 @@ h2 {
   background: var(--microsoft);
 }
 
-.providers {
+.notices {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
 
-.provider {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.provider .dot {
-  margin-top: 0;
-}
-
-.provider-name {
-  flex: 1;
-}
-
-.stale {
-  flex-basis: 100%;
+.notices p {
   margin: 0;
+}
+
+.autostart {
+  padding: 7px 10px;
 }
 
 .autostart label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
+  gap: 8px;
   cursor: pointer;
+}
+
+.autostart input {
+  margin: 0;
 }
 
 /* 창이 좁거나 세로로 길면 상세 일정을 달력 아래에 두고, 달력 상한을 넘는 높이는 상세 일정에 줍니다. */
@@ -233,23 +331,48 @@ h2 {
   --fc-page-bg-color: var(--surface);
   --fc-neutral-bg-color: var(--background);
   --fc-today-bg-color: transparent;
-  --fc-button-bg-color: var(--surface);
+  --fc-button-bg-color: var(--translucent-surface);
   --fc-button-border-color: var(--border);
   --fc-button-text-color: var(--text);
-  --fc-button-hover-bg-color: var(--background);
+  --fc-button-hover-bg-color: var(--translucent-background);
   --fc-button-hover-border-color: var(--border);
-  --fc-button-active-bg-color: var(--selected);
+  --fc-button-active-bg-color: var(--translucent-selected);
   --fc-button-active-border-color: var(--border);
   --fc-event-border-color: transparent;
   height: 100%;
 }
 
+/* 좌우 버튼 폭이 달라도 제목이 정중앙에 오도록 양쪽 열 너비를 맞춥니다. */
 .fc .fc-toolbar.fc-header-toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
   margin-bottom: 8px;
+}
+
+.fc .fc-toolbar-chunk:last-child {
+  justify-self: end;
 }
 
 .fc .fc-toolbar-title {
   font-size: 16px;
+}
+
+.fc .fc-goToday-button {
+  position: relative;
+  width: 32px;
+}
+
+.fc .fc-goToday-button::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translate(-50%, -50%);
 }
 
 .fc .fc-button {
@@ -287,19 +410,19 @@ h2 {
 }
 
 .fc .fc-daygrid-day.day-selected {
-  background: var(--selected);
+  background: var(--translucent-selected);
 }
 
 .fc .event-google {
-  --fc-event-bg-color: var(--google);
+  --fc-event-bg-color: var(--google-fill);
   --fc-event-text-color: #ffffff;
-  background: var(--google);
+  background: var(--google-fill);
 }
 
 .fc .event-microsoft {
-  --fc-event-bg-color: var(--microsoft);
+  --fc-event-bg-color: var(--microsoft-fill);
   --fc-event-text-color: #ffffff;
-  background: var(--microsoft);
+  background: var(--microsoft-fill);
 }
 
 .fc .event-google .fc-event-main,
@@ -317,7 +440,9 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 100vh;
   padding: 16px;
+  background: var(--background);
 }
 
 .editor label {

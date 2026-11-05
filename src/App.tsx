@@ -6,6 +6,7 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import koLocale from "@fullcalendar/core/locales/ko";
+import "pretendard/dist/web/variable/pretendardvariable.css";
 import EventEditor from "./EventEditor";
 import {
   CalendarEvent,
@@ -21,11 +22,83 @@ import {
 import "./App.css";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const TRANSPARENCY_STORAGE_KEY = "background-transparency";
+const DEFAULT_TRANSPARENCY = 0;
+const THEME_STORAGE_KEY = "theme";
+
+type Theme = "system" | "light" | "dark";
+
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: "system", label: "시스템" },
+  { value: "light", label: "라이트" },
+  { value: "dark", label: "다크" },
+];
+
+function readSavedTheme(): Theme {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    return saved === "light" || saved === "dark" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+}
+
+// 일정 추가 창에도 적용되도록 첫 렌더링 전에 테마를 정하고, 다른 창에서 바꾸면 따라갑니다.
+applyTheme(readSavedTheme());
+window.addEventListener("storage", (event) => {
+  if (event.key === THEME_STORAGE_KEY) applyTheme(readSavedTheme());
+});
+
+function useTheme() {
+  const [theme, setTheme] = useState(readSavedTheme);
+
+  function change(next: Theme) {
+    setTheme(next);
+    applyTheme(next);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // 저장하지 못해도 이번 실행에서는 적용됩니다.
+    }
+  }
+
+  return [theme, change] as const;
+}
+
+function readSavedTransparency(): number {
+  try {
+    const saved = Number(localStorage.getItem(TRANSPARENCY_STORAGE_KEY) ?? DEFAULT_TRANSPARENCY);
+    return saved >= 0 && saved <= 100 ? saved : DEFAULT_TRANSPARENCY;
+  } catch {
+    return DEFAULT_TRANSPARENCY;
+  }
+}
+
+function useBackgroundTransparency() {
+  const [transparency, setTransparency] = useState(readSavedTransparency);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--background-opacity", String(1 - transparency / 100));
+  }, [transparency]);
+
+  function change(next: number) {
+    setTransparency(next);
+    try {
+      localStorage.setItem(TRANSPARENCY_STORAGE_KEY, String(next));
+    } catch {
+      // 저장하지 못해도 이번 실행에서는 적용됩니다.
+    }
+  }
+
+  return [transparency, change] as const;
+}
 
 type WidgetStatus = {
-  summoned: boolean;
   maximized: boolean;
-  shortcut: string;
   shortcut_error: string | null;
 };
 
@@ -114,32 +187,107 @@ function useCalendarEvents(range: DayRange | null) {
   return { statuses, events, errors, staleSince, setErrors, refresh };
 }
 
-function ProviderBar({
+// 메뉴를 닫아도 보이도록 오류와 오프라인 안내는 상세 패널에 표시합니다.
+function Notices({
   statuses,
   errors,
   staleSince,
-  onConnect,
+  shortcutError,
 }: {
   statuses: ProviderStatus[];
   errors: Partial<Record<Provider, string>>;
   staleSince: Partial<Record<Provider, string>>;
+  shortcutError: string | null;
+}) {
+  const providers = statuses.filter(({ provider }) => errors[provider] || staleSince[provider]);
+  if (providers.length === 0 && !shortcutError) return null;
+
+  return (
+    <div className="notices">
+      {providers.map(({ provider }) => (
+        <div key={provider}>
+          {staleSince[provider] && (
+            <p className="muted">
+              {PROVIDER_LABELS[provider]}: {formatFetchedAt(staleSince[provider])} 기준 일정 표시 중
+            </p>
+          )}
+          {errors[provider] && (
+            <p className="error">
+              {PROVIDER_LABELS[provider]}: {errors[provider]}
+            </p>
+          )}
+        </div>
+      ))}
+      {shortcutError && <p className="error">단축키 등록 실패: {shortcutError}</p>}
+    </div>
+  );
+}
+
+function providerStateLabel({ configured, connected }: ProviderStatus): string {
+  if (!configured) return "설정 필요";
+  return connected ? "연결됨" : "로그인";
+}
+
+function WidgetMenu({
+  statuses,
+  theme,
+  onThemeChange,
+  transparency,
+  onTransparencyChange,
+  onRefresh,
+  onConnect,
+}: {
+  statuses: ProviderStatus[];
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
+  transparency: number;
+  onTransparencyChange: (transparency: number) => void;
+  onRefresh: () => void;
   onConnect: (provider: Provider) => void;
 }) {
   return (
-    <div className="providers">
-      {statuses.map(({ provider, configured, connected }) => (
-        <div key={provider} className="provider">
-          <span className={`dot ${provider}`} />
-          <span className="provider-name">{PROVIDER_LABELS[provider]}</span>
-          {!configured && <span className="muted">설정 필요</span>}
-          {configured && connected && <span className="muted">연결됨</span>}
-          {configured && !connected && <button onClick={() => onConnect(provider)}>로그인</button>}
-          {staleSince[provider] && (
-            <p className="muted stale">{formatFetchedAt(staleSince[provider])} 기준 일정 표시 중</p>
-          )}
-          {errors[provider] && <p className="error">{errors[provider]}</p>}
-        </div>
+    <div className="menu">
+      {statuses.map((status) => (
+        <button
+          key={status.provider}
+          className="menu-item"
+          disabled={!status.configured || status.connected}
+          onClick={() => onConnect(status.provider)}
+        >
+          <span className={`dot ${status.provider}`} />
+          <span className="menu-label">{PROVIDER_LABELS[status.provider]} 연동</span>
+          <span className="muted">{providerStateLabel(status)}</span>
+        </button>
       ))}
+      <hr className="menu-divider" />
+      <AutostartToggle />
+      <div className="menu-theme">
+        테마
+        <div className="theme-options">
+          {THEME_OPTIONS.map(({ value, label }) => (
+            <button key={value} aria-pressed={theme === value} onClick={() => onThemeChange(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className="menu-slider">
+        <span className="menu-slider-label">
+          배경 투명도
+          <span className="muted">{transparency}%</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={transparency}
+          onChange={(event) => onTransparencyChange(Number(event.target.value))}
+        />
+      </label>
+      <hr className="menu-divider" />
+      <button className="menu-item" onClick={onRefresh}>새로고침</button>
+      <button className="menu-item" onClick={() => invoke("quit")}>종료</button>
     </div>
   );
 }
@@ -166,7 +314,7 @@ function AutostartToggle() {
     <div className="autostart">
       <label>
         <input type="checkbox" checked={enabled} onChange={(event) => toggle(event.target.checked)} />
-        Windows 시작 시 실행
+        윈도우 시작 시 실행
       </label>
       {error && <p className="error">{error}</p>}
     </div>
@@ -177,21 +325,30 @@ function Widget() {
   const [status, setStatus] = useState<WidgetStatus | null>(null);
   const [selectedDay, setSelectedDay] = useState(() => toDayKey(new Date()));
   const [range, setRange] = useState<DayRange | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [theme, setTheme] = useTheme();
+  const [transparency, setTransparency] = useBackgroundTransparency();
+  const calendarRef = useRef<FullCalendar>(null);
   const { statuses, events, errors, staleSince, setErrors, refresh } = useCalendarEvents(range);
 
   useEffect(() => {
     invoke<WidgetStatus>("widget_status").then(setStatus);
-    const unlisten = listen<boolean>("summoned-changed", (event) => {
-      setStatus((current) => current && { ...current, summoned: event.payload });
-    });
-    return () => {
-      unlisten.then((stop) => stop());
-    };
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnOutsideClick = (event: globalThis.MouseEvent) => {
+      if (!(event.target as Element).closest(".menu, .fc-menu-button")) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [menuOpen]);
+
+  // 달력 상단 툴바의 빈 공간으로 창을 옮깁니다.
   // data-tauri-drag-region의 더블클릭 최대화는 바탕화면 자식 창을 주 모니터로 보내므로 직접 처리합니다.
-  async function handleTitlebarMouseDown(event: MouseEvent<HTMLElement>) {
-    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+  async function handleToolbarMouseDown(event: MouseEvent<HTMLElement>) {
+    const target = event.target as Element;
+    if (event.button !== 0 || !target.closest(".fc-header-toolbar") || target.closest("button")) return;
     if (event.detail === 2) {
       const maximized = await invoke<boolean>("toggle_maximized");
       setStatus((current) => current && { ...current, maximized });
@@ -201,6 +358,7 @@ function Widget() {
   }
 
   async function connect(provider: Provider) {
+    setMenuOpen(false);
     try {
       await invoke("connect", { provider });
       await refresh();
@@ -233,26 +391,41 @@ function Widget() {
 
   return (
     <main className="widget">
-      <header className="titlebar" onMouseDown={handleTitlebarMouseDown}>
-        <h1>캘린더</h1>
-        {status && (
-          <span className="muted" title={status.shortcut_error ?? undefined}>
-            {status.summoned ? "맨 앞" : "바탕화면 고정"} ·{" "}
-            {status.shortcut_error ? "단축키 등록 실패" : status.shortcut}
-          </span>
-        )}
-        <button onClick={() => refresh()}>새로고침</button>
-        <button onClick={() => invoke("quit")}>종료</button>
-      </header>
-
       <div className="layout">
-        <section className="calendar">
+        <section className="calendar" onMouseDown={handleToolbarMouseDown}>
+          {menuOpen && (
+            <WidgetMenu
+              statuses={statuses}
+              theme={theme}
+              onThemeChange={setTheme}
+              transparency={transparency}
+              onTransparencyChange={setTransparency}
+              onRefresh={() => {
+                setMenuOpen(false);
+                refresh();
+              }}
+              onConnect={connect}
+            />
+          )}
           <FullCalendar
+            ref={calendarRef}
             plugins={[dayGridPlugin, interactionPlugin]}
             initialView="dayGridMonth"
             locale={koLocale}
             height="100%"
-            headerToolbar={{ left: "prev,next today", center: "title", right: "" }}
+            headerToolbar={{ left: "menu", center: "title", right: "prev,goToday,next" }}
+            customButtons={{
+              menu: {
+                text: "☰",
+                hint: "메뉴",
+                click: () => setMenuOpen((open) => !open),
+              },
+              goToday: {
+                text: "",
+                hint: "오늘",
+                click: () => calendarRef.current?.getApi().today(),
+              },
+            }}
             fixedWeekCount={false}
             dayMaxEvents
             displayEventTime={false}
@@ -302,8 +475,12 @@ function Widget() {
             </ul>
           )}
 
-          <ProviderBar statuses={statuses} errors={errors} staleSince={staleSince} onConnect={connect} />
-          <AutostartToggle />
+          <Notices
+            statuses={statuses}
+            errors={errors}
+            staleSince={staleSince}
+            shortcutError={status?.shortcut_error ?? null}
+          />
         </aside>
       </div>
     </main>

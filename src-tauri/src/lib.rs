@@ -19,7 +19,6 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows_sys::Win32::Foundation::RECT;
 
-const SHORTCUT_LABEL: &str = "Ctrl+Alt+K";
 const MAIN_LABEL: &str = "main";
 const EDITOR_LABEL: &str = "event-editor";
 const ENV_FILE: &str = ".env.local";
@@ -176,9 +175,7 @@ fn place_initially(app: &AppHandle, maximized: bool) {
 
 #[derive(Serialize)]
 struct WidgetStatus {
-    summoned: bool,
     maximized: bool,
-    shortcut: &'static str,
     shortcut_error: Option<String>,
 }
 
@@ -214,16 +211,13 @@ fn toggle_summoned(app: &AppHandle) -> Result<(), String> {
     let summoned = !state.summoned.load(Ordering::SeqCst);
     place_window(app, summoned)?;
     state.summoned.store(summoned, Ordering::SeqCst);
-    app.emit("summoned-changed", summoned)
-        .map_err(|error| error.to_string())
+    Ok(())
 }
 
 #[tauri::command]
 fn widget_status(state: State<'_, WidgetState>) -> WidgetStatus {
     WidgetStatus {
-        summoned: state.summoned.load(Ordering::SeqCst),
         maximized: state.normal_rect.lock().unwrap().is_some(),
-        shortcut: SHORTCUT_LABEL,
         shortcut_error: state.shortcut_error.lock().unwrap().clone(),
     }
 }
