@@ -206,6 +206,15 @@ h2 {
   flex: 1;
 }
 
+.autostart label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 /* 창이 좁거나 세로로 길면 상세 일정을 달력 아래에 두고, 달력 상한을 넘는 높이는 상세 일정에 줍니다. */
 @media (max-width: 720px), (max-aspect-ratio: 1/1) {
   .layout {

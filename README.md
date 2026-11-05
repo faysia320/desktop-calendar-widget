@@ -11,6 +11,14 @@ pnpm tauri dev
 
 `Ctrl+Alt+K`를 누르면 위젯이 맨 앞으로 나오고, 다시 누르면 바탕화면 고정 상태로 돌아갑니다.
 
+## 설치와 자동 실행
+
+```powershell
+pnpm tauri build --no-bundle
+```
+
+빌드한 실행 파일을 `%LOCALAPPDATA%\Programs\desktop-calendar-widget`에 복사해 실행합니다. 자동 실행에서는 작업 폴더가 달라지므로 `.env.local`을 `%APPDATA%\com.rocket.desktopcalendarwidget`에도 복사합니다. 위젯의 "Windows 시작 시 실행"을 켜면 실행 중인 파일의 경로가 등록되며, 개발 빌드에서는 등록되지 않습니다.
+
 ## 캘린더 연동 설정
 
 `.env.example`을 `.env.local`로 복사한 뒤 아래에서 발급한 값을 입력합니다.

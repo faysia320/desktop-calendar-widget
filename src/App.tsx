@@ -116,6 +116,35 @@ function ProviderBar({
   );
 }
 
+function AutostartToggle() {
+  const [enabled, setEnabled] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    invoke<boolean>("autostart_enabled").then(setEnabled, (reason) => setError(String(reason)));
+  }, []);
+
+  async function toggle(next: boolean) {
+    setError("");
+    try {
+      await invoke("set_autostart", { enabled: next });
+      setEnabled(next);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  return (
+    <div className="autostart">
+      <label>
+        <input type="checkbox" checked={enabled} onChange={(event) => toggle(event.target.checked)} />
+        Windows 시작 시 실행
+      </label>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
 function Widget() {
   const [status, setStatus] = useState<WidgetStatus | null>(null);
   const [selectedDay, setSelectedDay] = useState(() => toDayKey(new Date()));
@@ -246,6 +275,7 @@ function Widget() {
           )}
 
           <ProviderBar statuses={statuses} errors={errors} onConnect={connect} />
+          <AutostartToggle />
         </aside>
       </div>
     </main>

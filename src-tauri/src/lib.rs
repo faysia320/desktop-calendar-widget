@@ -13,12 +13,14 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
-use windows_sys::Win32::Foundation::RECT;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use windows_sys::Win32::Foundation::RECT;
 
 const SHORTCUT_LABEL: &str = "Ctrl+Alt+K";
 const MAIN_LABEL: &str = "main";
 const EDITOR_LABEL: &str = "event-editor";
+const ENV_FILE: &str = ".env.local";
 const POSITION_FILE: &str = "window-position.json";
 const POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 // 창 왼쪽 위 모서리만 걸친 위치로 복원되어 위젯을 잡을 수 없게 되는 것을 막습니다.
@@ -138,20 +140,35 @@ fn restore_position(app: &AppHandle) -> Option<bool> {
     Some(placement.maximized)
 }
 
+fn wait_for_desktop() {
+    let started = Instant::now();
+    while !desktop_pin::desktop_ready() && started.elapsed() < DESKTOP_WAIT_TIMEOUT {
+        std::thread::sleep(DESKTOP_POLL_INTERVAL);
+    }
+    std::thread::sleep(DESKTOP_SETTLE_DELAY);
+}
+
 // Explorer가 재시작되면 부모인 바탕화면 창과 함께 위젯 창도 사라지므로 앱을 다시 띄웁니다.
 fn restart_when_desktop_returns(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         // 사라진 직후에는 예전 Progman이 아직 보일 수 있어 먼저 기다립니다.
         std::thread::sleep(DESKTOP_SETTLE_DELAY);
-        let started = Instant::now();
-        while !desktop_pin::desktop_ready() && started.elapsed() < DESKTOP_WAIT_TIMEOUT {
-            std::thread::sleep(DESKTOP_POLL_INTERVAL);
-        }
-        std::thread::sleep(DESKTOP_SETTLE_DELAY);
+        wait_for_desktop();
         single_instance::release();
         app.restart();
     });
+}
+
+fn place_initially(app: &AppHandle, maximized: bool) {
+    if let Err(error) = place_window(app, false) {
+        eprintln!("위젯 위치 변경 실패: {error}");
+    }
+    if maximized {
+        if let Err(error) = set_maximized(app, true) {
+            eprintln!("위젯 최대화 실패: {error}");
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -224,6 +241,28 @@ fn quit(app: AppHandle, state: State<'_, WidgetState>) {
 }
 
 #[tauri::command]
+fn autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    // 개발 빌드는 Vite 서버 없이 뜨지 않으므로 로그인 때 실행되면 빈 창만 나옵니다.
+    if cfg!(debug_assertions) {
+        return Err("개발 빌드에서는 등록할 수 없습니다.".to_string());
+    }
+    let autostart = app.autolaunch();
+    let result = if enabled {
+        autostart.enable()
+    } else {
+        autostart.disable()
+    };
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn provider_status() -> Vec<ProviderStatus> {
     oauth::provider_status()
 }
@@ -283,6 +322,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(WidgetState::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .on_window_event(|window, event| {
             if window.label() != MAIN_LABEL {
                 return;
@@ -306,14 +346,24 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let was_maximized = restore_position(app.handle()).unwrap_or(false);
-            if let Err(error) = place_window(app.handle(), false) {
-                eprintln!("위젯 위치 변경 실패: {error}");
+            // 자동 실행 때는 작업 폴더가 달라 리포지토리의 파일을 찾을 수 없습니다.
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                let _ = dotenvy::from_path(config_dir.join(ENV_FILE));
             }
-            if was_maximized {
-                if let Err(error) = set_maximized(app.handle(), true) {
-                    eprintln!("위젯 최대화 실패: {error}");
-                }
+
+            let was_maximized = restore_position(app.handle()).unwrap_or(false);
+            if desktop_pin::desktop_ready() {
+                place_initially(app.handle(), was_maximized);
+            } else {
+                // 로그인 직후에는 바탕화면 창이 아직 없을 수 있습니다.
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    wait_for_desktop();
+                    let main_thread_handle = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        place_initially(&main_thread_handle, was_maximized);
+                    });
+                });
             }
 
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyK);
@@ -341,6 +391,8 @@ pub fn run() {
             widget_status,
             quit,
             toggle_maximized,
+            autostart_enabled,
+            set_autostart,
             provider_status,
             connect,
             fetch_events,
