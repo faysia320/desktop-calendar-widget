@@ -12,7 +12,7 @@ use event_cache::{CachedEvents, EventCache};
 use oauth::{CalendarEvent, GoogleCalendar, NewEvent, Provider, ProviderStatus};
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -21,6 +21,9 @@ use windows_sys::Win32::Foundation::RECT;
 
 const MAIN_LABEL: &str = "main";
 const EDITOR_LABEL: &str = "event-editor";
+const EDITOR_OPEN_EVENT: &str = "event-editor-open";
+const EDITOR_WIDTH: f64 = 420.0;
+const EDITOR_HEIGHT: f64 = 470.0;
 const ENV_FILE: &str = ".env.local";
 const POSITION_FILE: &str = "window-position.json";
 const EVENT_CACHE_FILE: &str = "event-cache.json";
@@ -32,6 +35,7 @@ const DESKTOP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const DESKTOP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 // Explorer가 Progman을 만든 직후에는 자식 창이 아직 준비되지 않아 잠시 기다립니다.
 const DESKTOP_SETTLE_DELAY: Duration = Duration::from_secs(2);
+const PAGE_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 // 일정 캐시의 용량을 차지하지 않도록 공휴일은 별도 파일에 Google 항목으로 저장합니다.
 struct HolidayCache(EventCache);
@@ -44,6 +48,7 @@ struct WidgetState {
     // 최대화 중일 때만 값이 있으며, 되돌아갈 화면 기준 위치와 크기입니다.
     normal_rect: Mutex<Option<RECT>>,
     shortcut_error: Mutex<Option<String>>,
+    page_started: AtomicBool,
 }
 
 /// 최대화 중에도 x, y, 크기는 최대화 전 값을 저장합니다.
@@ -177,6 +182,20 @@ fn place_initially(app: &AppHandle, maximized: bool) {
     }
 }
 
+// WebView2가 내장 페이지 응답을 받지 못하면 빈 투명 창으로 남고 새로고침으로도 복구되지 않습니다.
+// 원인을 찾기 전까지 앱을 새로 실행해 복구합니다.
+fn restart_if_page_never_starts(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PAGE_START_TIMEOUT);
+        let state = app.state::<WidgetState>();
+        if !state.page_started.load(Ordering::SeqCst) && !state.quitting.load(Ordering::SeqCst) {
+            single_instance::release();
+            app.restart();
+        }
+    });
+}
+
 #[derive(Serialize)]
 struct WidgetStatus {
     maximized: bool,
@@ -220,6 +239,7 @@ fn toggle_summoned(app: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn widget_status(state: State<'_, WidgetState>) -> WidgetStatus {
+    state.page_started.store(true, Ordering::SeqCst);
     WidgetStatus {
         maximized: state.normal_rect.lock().unwrap().is_some(),
         shortcut_error: state.shortcut_error.lock().unwrap().clone(),
@@ -371,17 +391,40 @@ struct EditorTarget {
     event_id: String,
 }
 
-// 위젯이 있는 모니터의 가운데에 둡니다. 배율이 다른 모니터로 옮기면 창 크기도 바뀌므로
-// 먼저 그 모니터로 옮긴 뒤 크기를 읽습니다.
-fn center_on_widget_monitor(app: &AppHandle, window: &WebviewWindow) -> Option<()> {
-    let area = desktop_pin::work_area(&app.get_webview_window(MAIN_LABEL)?)?;
+// 위젯 가운데에 위젯과 같은 배율로 두되, 위젯이 작아도 모니터 밖으로 나가지 않게 합니다.
+// 배율이 다른 모니터로 옮기면 창 크기도 바뀌므로 먼저 그 모니터로 옮긴 뒤 크기를 정합니다.
+fn place_editor_over_widget(app: &AppHandle, window: &WebviewWindow) -> Option<()> {
+    let widget = app.get_webview_window(MAIN_LABEL)?;
+    let rect = desktop_pin::screen_rect(&widget)?;
+    let area = desktop_pin::work_area(&widget)?;
     window
         .set_position(PhysicalPosition::new(area.left, area.top))
         .ok()?;
+    let zoom = desktop_pin::floating_zoom(window);
+    window.set_zoom(zoom).ok()?;
+    window
+        .set_size(LogicalSize::new(EDITOR_WIDTH * zoom, EDITOR_HEIGHT * zoom))
+        .ok()?;
     let size = window.outer_size().ok()?;
-    let x = area.left + (area.right - area.left - size.width as i32) / 2;
-    let y = area.top + (area.bottom - area.top - size.height as i32) / 2;
+    let (width, height) = (size.width as i32, size.height as i32);
+    let x = (rect.left + (rect.right - rect.left - width) / 2)
+        .min(area.right - width)
+        .max(area.left);
+    let y = (rect.top + (rect.bottom - rect.top - height) / 2)
+        .min(area.bottom - height)
+        .max(area.top);
     window.set_position(PhysicalPosition::new(x, y)).ok()
+}
+
+// 어두워진 위젯을 누르면 다이얼로그를 다시 앞으로 가져옵니다.
+#[tauri::command]
+async fn focus_event_editor(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window(EDITOR_LABEL)
+        .ok_or_else(|| tauri::Error::WindowNotFound.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 // 위젯 창은 키보드 입력을 받지 않으므로 일정 입력은 별도 창에서 받습니다.
@@ -423,16 +466,21 @@ async fn open_event_editor(
     let url = format!("index.html?{query}");
     let window = WebviewWindowBuilder::new(&app, EDITOR_LABEL, WebviewUrl::App(url.into()))
         .title(title)
-        .inner_size(420.0, 470.0)
+        .inner_size(EDITOR_WIDTH, EDITOR_HEIGHT)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
         .resizable(false)
         .visible(false)
         .always_on_top(true)
         .focused(true)
         .build()
         .map_err(|error| error.to_string())?;
-    center_on_widget_monitor(&app, &window);
+    place_editor_over_widget(&app, &window);
     window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
+    window.set_focus().map_err(|error| error.to_string())?;
+    app.emit(EDITOR_OPEN_EVENT, true)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -449,6 +497,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .on_window_event(|window, event| {
+            if window.label() == EDITOR_LABEL {
+                if matches!(event, WindowEvent::Destroyed) {
+                    let _ = window.app_handle().emit(EDITOR_OPEN_EVENT, false);
+                }
+                return;
+            }
             if window.label() != MAIN_LABEL {
                 return;
             }
@@ -497,6 +551,7 @@ pub fn run() {
                     });
                 });
             }
+            restart_if_page_never_starts(app.handle());
 
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyK);
 
@@ -535,7 +590,8 @@ pub fn run() {
             google_event,
             update_google_event,
             delete_google_event,
-            open_event_editor
+            open_event_editor,
+            focus_event_editor
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

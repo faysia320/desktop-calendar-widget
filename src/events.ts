@@ -60,10 +60,95 @@ export function formatFetchedAt(fetchedAt: string): string {
   return fetchedAt.slice(5, 16).replace("-", "/");
 }
 
+// "YYYY-MM-DD"를 "11/5"로 줄입니다.
+function formatShortDay(day: string): string {
+  const [, month, date] = day.split("-").map(Number);
+  return `${month}/${date}`;
+}
+
 export function formatEventTime(event: RemoteEvent): string {
-  if (event.all_day) return "종일";
   const startDay = event.start.slice(0, 10);
   const endDay = event.end.slice(0, 10);
-  if (startDay === endDay) return `${event.start.slice(11)} ~ ${event.end.slice(11)}`;
-  return `${event.start.slice(5).replace("-", "/")} ~ ${event.end.slice(5).replace("-", "/")}`;
+  if (event.all_day) {
+    const lastDay = previousDay(endDay);
+    return lastDay > startDay ? `종일 · ${formatShortDay(startDay)} – ${formatShortDay(lastDay)}` : "종일";
+  }
+  const startTime = event.start.slice(11);
+  const endTime = event.end.slice(11);
+  if (startDay === endDay) return `${startTime} – ${endTime}`;
+  return `${formatShortDay(startDay)} ${startTime} – ${formatShortDay(endDay)} ${endTime}`;
+}
+
+function parseDay(day: string): Date {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date);
+}
+
+// 상세 패널 제목에 쓰는 날짜 표현입니다.
+export function describeDay(day: string, today: string) {
+  const date = parseDay(day);
+  const offset = Math.round((date.getTime() - parseDay(today).getTime()) / 86_400_000);
+  return {
+    heading: `${date.getMonth() + 1}월 ${date.getDate()}일`,
+    weekday: date.toLocaleDateString("ko-KR", { weekday: "long" }),
+    relative: { [-1]: "어제", 0: "오늘", 1: "내일" }[offset] ?? null,
+  };
+}
+
+function formatClock(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+// 일정의 시작, 종료와 같은 "YYYY-MM-DD HH:mm" 형식이라 문자열로 비교할 수 있습니다.
+export function toMinuteKey(date: Date): string {
+  return `${toDayKey(date)} ${formatClock(date)}`;
+}
+
+export type EventPhase = "past" | "ongoing" | "upcoming";
+
+export function eventPhase(event: RemoteEvent, now: string): EventPhase {
+  if (event.end <= now) return "past";
+  return !event.all_day && event.start <= now ? "ongoing" : "upcoming";
+}
+
+// 고른 날에 일정이 없을 때 안내할, 그 뒤의 가장 가까운 일정입니다.
+export function nextEventAfter<T extends RemoteEvent>(events: T[], day: string): T | null {
+  return events
+    .filter((event) => event.start.slice(0, 10) > day)
+    .reduce<T | null>((next, event) => (!next || event.start < next.start ? event : next), null);
+}
+
+export function formatDayLabel(day: string): string {
+  const date = parseDay(day);
+  const weekday = date.toLocaleDateString("ko-KR", { weekday: "short" });
+  return `${date.getMonth() + 1}월 ${date.getDate()}일 (${weekday})`;
+}
+
+// 오늘은 다음 정시, 다른 날은 오전 9시를 새 일정의 시작으로 제안합니다.
+export function suggestedStartTime(day: string, now: Date): string {
+  if (day !== toDayKey(now) || now.getHours() >= 23) return "09:00";
+  return `${String(now.getHours() + 1).padStart(2, "0")}:00`;
+}
+
+export type DayTime = { day: string; time: string };
+
+function toDate({ day, time }: DayTime): Date {
+  const [hours, minutes] = time.split(":").map(Number);
+  const date = parseDay(day);
+  date.setHours(hours, minutes);
+  return date;
+}
+
+function addMilliseconds(moment: DayTime, milliseconds: number): DayTime {
+  const moved = new Date(toDate(moment).getTime() + milliseconds);
+  return { day: toDayKey(moved), time: formatClock(moved) };
+}
+
+export function oneHourAfter(start: DayTime): DayTime {
+  return addMilliseconds(start, 3_600_000);
+}
+
+// 시작을 옮기면 일정 길이가 유지되도록 종료도 같은 만큼 옮깁니다.
+export function moveEndWithStart(previousStart: DayTime, nextStart: DayTime, end: DayTime): DayTime {
+  return addMilliseconds(end, toDate(nextStart).getTime() - toDate(previousStart).getTime());
 }

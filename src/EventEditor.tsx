@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { RemoteEvent, previousDay } from "./events";
+import { RemoteEvent, moveEndWithStart, oneHourAfter, previousDay, suggestedStartTime } from "./events";
 
 type GoogleCalendar = { id: string; name: string; primary: boolean };
 
@@ -13,14 +13,20 @@ function EventEditor({ date, target }: { date: string; target?: EditTarget }) {
   const [loaded, setLoaded] = useState(!target);
   const [title, setTitle] = useState("");
   const [allDay, setAllDay] = useState(false);
-  const [startDate, setStartDate] = useState(date);
-  const [endDate, setEndDate] = useState(date);
-  const [startTime, setStartTime] = useState("09:00");
-  const [endTime, setEndTime] = useState("10:00");
+  const [start, setStart] = useState(() => ({ day: date, time: suggestedStartTime(date, new Date()) }));
+  const [end, setEnd] = useState(() => oneHourAfter({ day: date, time: suggestedStartTime(date, new Date()) }));
   const [location, setLocation] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") getCurrentWindow().close();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, []);
 
   useEffect(() => {
     invoke<GoogleCalendar[]>("google_calendars").then(
@@ -38,11 +44,14 @@ function EventEditor({ date, target }: { date: string; target?: EditTarget }) {
       (event) => {
         setTitle(event.title);
         setAllDay(event.all_day);
-        setStartDate(event.start.slice(0, 10));
-        setEndDate(event.all_day ? previousDay(event.end.slice(0, 10)) : event.end.slice(0, 10));
-        if (!event.all_day) {
-          setStartTime(event.start.slice(11));
-          setEndTime(event.end.slice(11));
+        const startDay = event.start.slice(0, 10);
+        const endDay = event.end.slice(0, 10);
+        if (event.all_day) {
+          setStart((current) => ({ ...current, day: startDay }));
+          setEnd((current) => ({ ...current, day: previousDay(endDay) }));
+        } else {
+          setStart({ day: startDay, time: event.start.slice(11) });
+          setEnd({ day: endDay, time: event.end.slice(11) });
         }
         setLocation(event.location ?? "");
         setLoaded(true);
@@ -51,6 +60,16 @@ function EventEditor({ date, target }: { date: string; target?: EditTarget }) {
     );
   }, [target?.calendarId, target?.eventId]);
 
+  // 입력 중 값을 지우면 빈 문자열이 오므로, 그때는 종료를 옮기지 않습니다.
+  function changeStart(next: { day: string; time: string }) {
+    if (next.day && next.time && start.day && start.time && end.day && end.time) {
+      setEnd(moveEndWithStart(start, next, end));
+    }
+    setStart(next);
+  }
+
+  const endTooEarly = allDay ? end.day < start.day : `${end.day} ${end.time}` <= `${start.day} ${start.time}`;
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -58,10 +77,10 @@ function EventEditor({ date, target }: { date: string; target?: EditTarget }) {
     const fields = {
       calendar_id: calendarId,
       title,
-      start_date: startDate,
-      end_date: endDate,
-      start_time: allDay ? null : startTime,
-      end_time: allDay ? null : endTime,
+      start_date: start.day,
+      end_date: end.day,
+      start_time: allDay ? null : start.time,
+      end_time: allDay ? null : end.time,
       location,
     };
     try {
@@ -97,83 +116,125 @@ function EventEditor({ date, target }: { date: string; target?: EditTarget }) {
 
   return (
     <form className="editor" onSubmit={submit}>
-      <h1>{target ? "Google 캘린더 일정 편집" : "Google 캘린더에 일정 추가"}</h1>
-
-      <label>
-        캘린더
-        <select
-          value={calendarId}
-          disabled={!!target}
-          onChange={(e) => setCalendarId(e.target.value)}
-          required
+      <header
+        className="editor-bar"
+        onMouseDown={(event) => {
+          if (event.button === 0 && !(event.target as Element).closest("button")) {
+            getCurrentWindow().startDragging();
+          }
+        }}
+      >
+        <button type="button" className="text-button" onClick={() => getCurrentWindow().close()}>취소</button>
+        <h1>{target ? "일정 편집" : "새 일정"}</h1>
+        <button
+          type="submit"
+          className="primary"
+          disabled={saving || !calendarId || !loaded || endTooEarly}
         >
-          {calendars.map((calendar) => (
-            <option key={calendar.id} value={calendar.id}>
-              {calendar.name}
-            </option>
-          ))}
-        </select>
-      </label>
+          {saving ? "저장 중" : "저장"}
+        </button>
+      </header>
 
-      <label>
-        제목
-        <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required />
-      </label>
-
-      <label className="checkbox">
-        <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
-        종일
-      </label>
-
-      <div className="editor-row">
-        <label>
-          시작일
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} required />
-        </label>
-        {!allDay && (
-          <label>
-            시작 시각
-            <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} required />
-          </label>
-        )}
+      <div className="editor-group">
+        <input
+          className="editor-title-input"
+          aria-label="제목"
+          placeholder="제목"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+          required
+        />
+        <input
+          aria-label="장소"
+          placeholder="장소"
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+        />
       </div>
 
-      <div className="editor-row">
-        <label>
-          종료일
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} required />
+      <div className="editor-group">
+        <label className="editor-row">
+          <span>종일</span>
+          <input className="switch" type="checkbox" role="switch" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
         </label>
-        {!allDay && (
-          <label>
-            종료 시각
-            <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} required />
-          </label>
-        )}
+        <div className="editor-row">
+          <span>시작</span>
+          <div className="editor-when">
+            <input
+              type="date"
+              aria-label="시작일"
+              value={start.day}
+              onChange={(e) => changeStart({ ...start, day: e.target.value })}
+              required
+            />
+            {!allDay && (
+              <input
+                type="time"
+                aria-label="시작 시각"
+                value={start.time}
+                onChange={(e) => changeStart({ ...start, time: e.target.value })}
+                required
+              />
+            )}
+          </div>
+        </div>
+        <div className={endTooEarly ? "editor-row invalid" : "editor-row"}>
+          <span>종료</span>
+          <div className="editor-when">
+            <input
+              type="date"
+              aria-label="종료일"
+              value={end.day}
+              onChange={(e) => setEnd({ ...end, day: e.target.value })}
+              required
+            />
+            {!allDay && (
+              <input
+                type="time"
+                aria-label="종료 시각"
+                value={end.time}
+                onChange={(e) => setEnd({ ...end, time: e.target.value })}
+                required
+              />
+            )}
+          </div>
+        </div>
+      </div>
+      {endTooEarly && <p className="error editor-hint">종료는 시작보다 늦어야 합니다.</p>}
+
+      <div className="editor-group">
+        <label className="editor-row">
+          <span>캘린더</span>
+          <select
+            value={calendarId}
+            disabled={!!target}
+            onChange={(e) => setCalendarId(e.target.value)}
+            required
+          >
+            {calendars.map((calendar) => (
+              <option key={calendar.id} value={calendar.id}>
+                {calendar.name}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
-      <label>
-        장소
-        <input value={location} onChange={(e) => setLocation(e.target.value)} />
-      </label>
+      {error && <p className="error editor-hint">{error}</p>}
 
-      {error && <p className="error">{error}</p>}
-
-      <div className="editor-actions">
-        {target && (
+      {target && (
+        <div className="editor-group">
           <button
             type="button"
             className={confirmingDelete ? "editor-delete confirming" : "editor-delete"}
             disabled={saving || !loaded}
             onClick={deleteEvent}
           >
-            {confirmingDelete ? "정말 삭제" : "삭제"}
+            {confirmingDelete ? "한 번 더 누르면 삭제됩니다" : "일정 삭제"}
           </button>
-        )}
-        <button type="button" onClick={() => getCurrentWindow().close()}>취소</button>
-        <button type="submit" className="primary" disabled={saving || !calendarId || !loaded}>
-          {saving ? "저장 중" : "저장"}
-        </button>
-      </div>
+        </div>
+      )}
     </form>
   );
 }
