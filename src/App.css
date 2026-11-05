@@ -1,0 +1,346 @@
+:root {
+  color-scheme: light dark;
+  --background: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1f2328;
+  --muted: #5d6673;
+  --border: #d5dae1;
+  --accent: #1a5fb4;
+  --accent-text: #ffffff;
+  --selected: #dbe8f8;
+  --error: #b3261e;
+  --google: #1a73e8;
+  --microsoft: #b45309;
+  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1d2025;
+    --surface: #282c33;
+    --text: #eceef1;
+    --muted: #a5adb8;
+    --border: #3d434d;
+    --accent: #7fb2f0;
+    --accent-text: #10243d;
+    --selected: #2c3e57;
+    --error: #f2a29c;
+    --google: #5b9df0;
+    --microsoft: #e09a4f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+}
+
+button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.error {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  color: var(--error);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.widget {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 0 14px 14px;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.titlebar h1 {
+  flex: 1;
+}
+
+.layout {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 12px;
+  min-height: 0;
+}
+
+.calendar,
+.details {
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.details-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.empty {
+  flex: 1;
+  margin: 0;
+}
+
+.events {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.events li {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.events li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.events span:not(.dot) {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+}
+
+.dot.google {
+  background: var(--google);
+}
+
+.dot.microsoft {
+  background: var(--microsoft);
+}
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.provider {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.provider .dot {
+  margin-top: 0;
+}
+
+.provider-name {
+  flex: 1;
+}
+
+/* 창이 좁거나 세로로 길면 상세 일정을 달력 아래에 두고, 달력 상한을 넘는 높이는 상세 일정에 줍니다. */
+@media (max-width: 720px), (max-aspect-ratio: 1/1) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 560px) minmax(220px, 1fr);
+  }
+}
+
+.fc {
+  --fc-border-color: var(--border);
+  --fc-page-bg-color: var(--surface);
+  --fc-neutral-bg-color: var(--background);
+  --fc-today-bg-color: transparent;
+  --fc-button-bg-color: var(--surface);
+  --fc-button-border-color: var(--border);
+  --fc-button-text-color: var(--text);
+  --fc-button-hover-bg-color: var(--background);
+  --fc-button-hover-border-color: var(--border);
+  --fc-button-active-bg-color: var(--selected);
+  --fc-button-active-border-color: var(--border);
+  --fc-event-border-color: transparent;
+  height: 100%;
+}
+
+.fc .fc-toolbar.fc-header-toolbar {
+  margin-bottom: 8px;
+}
+
+.fc .fc-toolbar-title {
+  font-size: 16px;
+}
+
+.fc .fc-button {
+  padding: 3px 8px;
+  font-size: 13px;
+}
+
+.fc .fc-col-header-cell-cushion,
+.fc .fc-daygrid-day-number {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.fc .fc-day-today .fc-daygrid-day-number {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.fc .fc-day-other .fc-daygrid-day-number {
+  color: var(--muted);
+}
+
+.fc .fc-daygrid-day {
+  cursor: pointer;
+}
+
+.fc .fc-daygrid-day-number {
+  padding: 2px 4px;
+  font-size: 12px;
+}
+
+.fc .fc-daygrid-event,
+.fc .fc-daygrid-more-link {
+  font-size: 11px;
+}
+
+.fc .fc-daygrid-day.day-selected {
+  background: var(--selected);
+}
+
+.fc .event-google {
+  --fc-event-bg-color: var(--google);
+  --fc-event-text-color: #ffffff;
+  background: var(--google);
+}
+
+.fc .event-microsoft {
+  --fc-event-bg-color: var(--microsoft);
+  --fc-event-text-color: #ffffff;
+  background: var(--microsoft);
+}
+
+.fc .event-google .fc-event-main,
+.fc .event-microsoft .fc-event-main,
+.fc .event-google.fc-daygrid-dot-event,
+.fc .event-microsoft.fc-daygrid-dot-event {
+  color: #ffffff;
+}
+
+.fc .fc-daygrid-event-dot {
+  border-color: #ffffff;
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.editor label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.editor label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.editor input:not([type="checkbox"]) {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.editor-row {
+  display: flex;
+  gap: 8px;
+}
+
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
