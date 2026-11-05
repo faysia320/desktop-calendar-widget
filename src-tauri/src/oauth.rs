@@ -41,8 +41,8 @@ pub enum Provider {
 struct ProviderConfig {
     client_id: String,
     client_secret: Option<String>,
-    auth_url: &'static str,
-    token_url: &'static str,
+    auth_url: String,
+    token_url: String,
     scope: &'static str,
     redirect_host: &'static str,
     extra_auth_params: &'static [(&'static str, &'static str)],
@@ -63,21 +63,29 @@ impl Provider {
                 client_secret: std::env::var("GOOGLE_CLIENT_SECRET")
                     .ok()
                     .filter(|secret| !secret.is_empty()),
-                auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
-                token_url: "https://oauth2.googleapis.com/token",
+                auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+                token_url: "https://oauth2.googleapis.com/token".to_string(),
                 scope: "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly",
                 redirect_host: "127.0.0.1",
                 extra_auth_params: &[("access_type", "offline"), ("prompt", "consent")],
             }),
-            Provider::Microsoft => Ok(ProviderConfig {
-                client_id: required_env("MICROSOFT_CLIENT_ID")?,
-                client_secret: None,
-                auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-                token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-                scope: "offline_access https://graph.microsoft.com/Calendars.Read",
-                redirect_host: "localhost",
-                extra_auth_params: &[("prompt", "select_account")],
-            }),
+            Provider::Microsoft => {
+                // 회사 계정 전용(단일 테넌트) 앱은 common 주소로 로그인할 수 없습니다.
+                let tenant_id = required_env("MICROSOFT_TENANT_ID")?;
+                Ok(ProviderConfig {
+                    client_id: required_env("MICROSOFT_CLIENT_ID")?,
+                    client_secret: None,
+                    auth_url: format!(
+                        "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
+                    ),
+                    token_url: format!(
+                        "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+                    ),
+                    scope: "offline_access https://graph.microsoft.com/Calendars.Read",
+                    redirect_host: "localhost",
+                    extra_auth_params: &[("prompt", "select_account")],
+                })
+            }
         }
     }
 }
@@ -192,7 +200,7 @@ pub async fn connect(app: &AppHandle, provider: Provider) -> Result<(), String> 
     let verifier = random_token();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
 
-    let mut auth_url = Url::parse(config.auth_url).map_err(|error| error.to_string())?;
+    let mut auth_url = Url::parse(&config.auth_url).map_err(|error| error.to_string())?;
     auth_url
         .query_pairs_mut()
         .append_pair("client_id", &config.client_id)
@@ -310,7 +318,7 @@ async fn request_token(
     }
 
     let response = http_client()?
-        .post(config.token_url)
+        .post(&config.token_url)
         .form(&form)
         .send()
         .await

@@ -33,6 +33,7 @@ pnpm tauri build --no-bundle
 
 ### Microsoft
 
-1. Microsoft Entra 관리 센터의 앱 등록에서 새 앱을 만듭니다. 계정 유형은 조직 계정과 개인 계정을 모두 허용합니다.
+1. Microsoft Entra 관리 센터의 앱 등록에서 새 앱을 만듭니다. 계정 유형은 단일 테넌트로 둡니다.
 2. "모바일 및 데스크톱 애플리케이션" 플랫폼에 리디렉션 URI `http://localhost`를 추가합니다.
-3. 애플리케이션 ID를 `MICROSOFT_CLIENT_ID`에 입력합니다.
+3. API 사용 권한에 Microsoft Graph의 위임된 권한 `Calendars.Read`를 추가합니다.
+4. 애플리케이션 ID를 `MICROSOFT_CLIENT_ID`, 디렉터리(테넌트) ID를 `MICROSOFT_TENANT_ID`에 입력합니다.
