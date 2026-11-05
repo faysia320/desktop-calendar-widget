@@ -166,13 +166,36 @@ fn keyring_entry(provider: Provider) -> Result<keyring::Entry, String> {
         .map_err(|error| format!("자격 증명 저장소를 열 수 없습니다: {error}"))
 }
 
+// set_password는 UTF-16으로 저장해 Microsoft 토큰이 한도(2,560바이트)를 넘으므로 그대로 저장합니다.
 fn store_refresh_token(provider: Provider, token: &str) -> Result<(), String> {
-    keyring_entry(provider)?.set_password(token).map_err(|error| {
-        format!(
-            "토큰 저장 실패({}바이트): {error}",
-            token.len()
-        )
-    })
+    keyring_entry(provider)?
+        .set_secret(token.as_bytes())
+        .map_err(|error| {
+            format!(
+                "토큰 저장 실패({}바이트): {error}",
+                token.len()
+            )
+        })
+}
+
+// 토큰은 ASCII라서 0 바이트가 있으면 이전에 set_password로 저장한 UTF-16 값입니다.
+fn decode_refresh_token(secret: &[u8]) -> Result<String, String> {
+    if secret.contains(&0) {
+        let units: Vec<u16> = secret
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .collect();
+        String::from_utf16(&units).map_err(|error| error.to_string())
+    } else {
+        String::from_utf8(secret.to_vec()).map_err(|error| error.to_string())
+    }
+}
+
+fn load_refresh_token(provider: Provider) -> Result<String, String> {
+    let secret = keyring_entry(provider)?
+        .get_secret()
+        .map_err(|error| error.to_string())?;
+    decode_refresh_token(&secret)
 }
 
 pub fn provider_status() -> Vec<ProviderStatus> {
@@ -181,9 +204,7 @@ pub fn provider_status() -> Vec<ProviderStatus> {
         .map(|provider| ProviderStatus {
             provider,
             configured: provider.config().is_ok(),
-            connected: keyring_entry(provider)
-                .and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
-                .is_ok(),
+            connected: load_refresh_token(provider).is_ok(),
         })
         .collect()
 }
@@ -336,8 +357,7 @@ async fn request_token(
 
 async fn access_token(provider: Provider) -> Result<String, String> {
     let config = provider.config()?;
-    let refresh_token = keyring_entry(provider)?
-        .get_password()
+    let refresh_token = load_refresh_token(provider)
         .map_err(|error| format!("저장된 토큰을 읽을 수 없습니다. 먼저 로그인해 주세요: {error}"))?;
 
     let token = request_token(
@@ -1110,6 +1130,17 @@ mod tests {
         assert!(google_event_body(&blank_title).is_err());
     }
 
+    #[test]
+    fn refresh_token_is_decoded_from_raw_and_old_utf16_values() {
+        assert_eq!(decode_refresh_token(b"abc.-_1").unwrap(), "abc.-_1");
+
+        let old_value: Vec<u8> = "abc.-_1"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(decode_refresh_token(&old_value).unwrap(), "abc.-_1");
+    }
+
     // 실제 Credential Manager를 사용하므로 직접 지정할 때만 실행합니다.
     #[test]
     #[ignore]
@@ -1117,9 +1148,9 @@ mod tests {
         let entry = keyring::Entry::new(KEYRING_SERVICE, "size-limit-test").unwrap();
         for size in [1024, 2048, 2560, 2561, 4096, 8192] {
             let value = "x".repeat(size);
-            match entry.set_password(&value) {
+            match entry.set_secret(value.as_bytes()) {
                 Ok(()) => {
-                    assert_eq!(entry.get_password().unwrap(), value);
+                    assert_eq!(decode_refresh_token(&entry.get_secret().unwrap()).unwrap(), value);
                     println!("{size} bytes: ok");
                 }
                 Err(error) => println!("{size} bytes: {error}"),
