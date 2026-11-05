@@ -14,6 +14,7 @@ import {
   RemoteEvent,
   compareEvents,
   formatEventTime,
+  formatFetchedAt,
   occursOn,
   toDayKey,
 } from "./events";
@@ -36,11 +37,16 @@ type ProviderStatus = {
 
 type DayRange = { from: string; to: string };
 
+type CachedEvents = { events: RemoteEvent[]; fetched_at: string };
+
 function useCalendarEvents(range: DayRange | null) {
   const [statuses, setStatuses] = useState<ProviderStatus[]>([]);
   const [eventsByProvider, setEventsByProvider] = useState<Partial<Record<Provider, RemoteEvent[]>>>({});
   const [errors, setErrors] = useState<Partial<Record<Provider, string>>>({});
+  // 저장된 일정을 보여 주는 동안 그 일정을 가져온 시각입니다.
+  const [staleSince, setStaleSince] = useState<Partial<Record<Provider, string>>>({});
   const latestRequest = useRef(0);
+  const shownRange = useRef("");
 
   const refresh = useCallback(async () => {
     const request = ++latestRequest.current;
@@ -49,20 +55,37 @@ function useCalendarEvents(range: DayRange | null) {
     setStatuses(current);
     if (!range) return;
 
+    const rangeKey = `${range.from}|${range.to}`;
+    const isNewRange = shownRange.current !== rangeKey;
+    shownRange.current = rangeKey;
+
     await Promise.all(
-      current
-        .filter((status) => status.connected && status.configured)
-        .map(async ({ provider }) => {
-          try {
-            const events = await invoke<RemoteEvent[]>("fetch_events", { provider, ...range });
-            if (request !== latestRequest.current) return;
-            setEventsByProvider((previous) => ({ ...previous, [provider]: events }));
-            setErrors((previous) => ({ ...previous, [provider]: undefined }));
-          } catch (error) {
-            if (request !== latestRequest.current) return;
-            setErrors((previous) => ({ ...previous, [provider]: String(error) }));
-          }
-        }),
+      current.map(async ({ provider, configured, connected }) => {
+        const cached = await invoke<CachedEvents | null>("cached_events", { provider, ...range });
+        if (request !== latestRequest.current) return;
+        // 네트워크를 기다리지 않고 저장된 일정을 먼저 보여 줍니다.
+        if (isNewRange && cached) {
+          setEventsByProvider((previous) => ({ ...previous, [provider]: cached.events }));
+        }
+        const showCached = () =>
+          setStaleSince((previous) => ({ ...previous, [provider]: cached?.fetched_at }));
+
+        if (!configured || !connected) {
+          showCached();
+          return;
+        }
+        try {
+          const events = await invoke<RemoteEvent[]>("fetch_events", { provider, ...range });
+          if (request !== latestRequest.current) return;
+          setEventsByProvider((previous) => ({ ...previous, [provider]: events }));
+          setErrors((previous) => ({ ...previous, [provider]: undefined }));
+          setStaleSince((previous) => ({ ...previous, [provider]: undefined }));
+        } catch (error) {
+          if (request !== latestRequest.current) return;
+          setErrors((previous) => ({ ...previous, [provider]: String(error) }));
+          showCached();
+        }
+      }),
     );
 
     // 조회 중 로그인이 만료되면 연결 상태가 바뀌므로 다시 읽습니다.
@@ -88,16 +111,18 @@ function useCalendarEvents(range: DayRange | null) {
     [eventsByProvider],
   );
 
-  return { statuses, events, errors, setErrors, refresh };
+  return { statuses, events, errors, staleSince, setErrors, refresh };
 }
 
 function ProviderBar({
   statuses,
   errors,
+  staleSince,
   onConnect,
 }: {
   statuses: ProviderStatus[];
   errors: Partial<Record<Provider, string>>;
+  staleSince: Partial<Record<Provider, string>>;
   onConnect: (provider: Provider) => void;
 }) {
   return (
@@ -109,6 +134,9 @@ function ProviderBar({
           {!configured && <span className="muted">설정 필요</span>}
           {configured && connected && <span className="muted">연결됨</span>}
           {configured && !connected && <button onClick={() => onConnect(provider)}>로그인</button>}
+          {staleSince[provider] && (
+            <p className="muted stale">{formatFetchedAt(staleSince[provider])} 기준 일정 표시 중</p>
+          )}
           {errors[provider] && <p className="error">{errors[provider]}</p>}
         </div>
       ))}
@@ -149,7 +177,7 @@ function Widget() {
   const [status, setStatus] = useState<WidgetStatus | null>(null);
   const [selectedDay, setSelectedDay] = useState(() => toDayKey(new Date()));
   const [range, setRange] = useState<DayRange | null>(null);
-  const { statuses, events, errors, setErrors, refresh } = useCalendarEvents(range);
+  const { statuses, events, errors, staleSince, setErrors, refresh } = useCalendarEvents(range);
 
   useEffect(() => {
     invoke<WidgetStatus>("widget_status").then(setStatus);
@@ -274,7 +302,7 @@ function Widget() {
             </ul>
           )}
 
-          <ProviderBar statuses={statuses} errors={errors} onConnect={connect} />
+          <ProviderBar statuses={statuses} errors={errors} staleSince={staleSince} onConnect={connect} />
           <AutostartToggle />
         </aside>
       </div>

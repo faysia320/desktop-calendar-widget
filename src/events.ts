@@ -38,6 +38,11 @@ export function compareEvents(a: RemoteEvent, b: RemoteEvent): number {
   return a.start.localeCompare(b.start);
 }
 
+// "YYYY-MM-DD HH:mm:ss"를 "MM/DD HH:mm"으로 줄입니다.
+export function formatFetchedAt(fetchedAt: string): string {
+  return fetchedAt.slice(5, 16).replace("-", "/");
+}
+
 export function formatEventTime(event: RemoteEvent): string {
   if (event.all_day) return "종일";
   const startDay = event.start.slice(0, 10);

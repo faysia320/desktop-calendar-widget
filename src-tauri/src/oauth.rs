@@ -18,6 +18,8 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 // 브라우저가 요청 없이 미리 열어 두는 연결이 로그인 응답을 막지 않도록 짧게 끊습니다.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: usize = 8192;
+// 응답 없는 네트워크에서 저장된 일정 안내가 늦어지지 않게 합니다.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const GOOGLE_PAGE_SIZE: &str = "250";
 const GRAPH_PAGE_SIZE: &str = "100";
 const GOOGLE_EVENTS_URL: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
@@ -87,14 +89,14 @@ pub struct ProviderStatus {
     connected: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CalendarEvent {
-    id: String,
-    title: String,
-    start: String,
-    end: String,
-    all_day: bool,
-    location: Option<String>,
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) all_day: bool,
+    pub(crate) location: Option<String>,
 }
 
 /// 시각이 없으면 종일 일정이며, 종일 일정의 종료일은 마지막 날을 포함합니다.
@@ -112,6 +114,20 @@ pub struct NewEvent {
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+fn request_error(action: &str, error: reqwest::Error) -> String {
+    if error.is_connect() || error.is_timeout() {
+        return "네트워크에 연결할 수 없습니다.".to_string();
+    }
+    format!("{action} 실패: {error}")
 }
 
 fn random_token() -> String {
@@ -276,12 +292,12 @@ async fn request_token(
         form.push(("client_secret", secret));
     }
 
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .post(config.token_url)
         .form(&form)
         .send()
         .await
-        .map_err(|error| format!("토큰 요청 실패: {error}"))?;
+        .map_err(|error| request_error("토큰 요청", error))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -362,13 +378,13 @@ pub async fn create_google_event(event: &NewEvent) -> Result<CalendarEvent, Stri
     let body = google_event_body(event)?;
     let access_token = access_token(Provider::Google).await?;
 
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .post(GOOGLE_EVENTS_URL)
         .bearer_auth(&access_token)
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("일정 등록 실패: {error}"))?;
+        .map_err(|error| request_error("일정 등록", error))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -432,13 +448,13 @@ async fn get_json<T: for<'de> Deserialize<'de>>(
     access_token: &str,
     query: &[(&str, String)],
 ) -> Result<T, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .get(url)
         .bearer_auth(access_token)
         .query(query)
         .send()
         .await
-        .map_err(|error| format!("일정 요청 실패: {error}"))?;
+        .map_err(|error| request_error("일정 요청", error))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();

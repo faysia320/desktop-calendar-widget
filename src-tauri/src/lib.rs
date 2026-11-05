@@ -1,4 +1,5 @@
 mod desktop_pin;
+mod event_cache;
 mod oauth;
 mod single_instance;
 
@@ -7,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
+use event_cache::{CachedEvents, EventCache};
 use oauth::{CalendarEvent, NewEvent, Provider, ProviderStatus};
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -22,6 +24,7 @@ const MAIN_LABEL: &str = "main";
 const EDITOR_LABEL: &str = "event-editor";
 const ENV_FILE: &str = ".env.local";
 const POSITION_FILE: &str = "window-position.json";
+const EVENT_CACHE_FILE: &str = "event-cache.json";
 const POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 // 창 왼쪽 위 모서리만 걸친 위치로 복원되어 위젯을 잡을 수 없게 되는 것을 막습니다.
 const MIN_VISIBLE_PX: i32 = 100;
@@ -273,12 +276,28 @@ async fn connect(app: AppHandle, provider: Provider) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn cached_events(
+    cache: State<'_, EventCache>,
+    provider: Provider,
+    from: String,
+    to: String,
+) -> Option<CachedEvents> {
+    cache.load(provider, &from, &to)
+}
+
+#[tauri::command]
 async fn fetch_events(
+    cache: State<'_, EventCache>,
     provider: Provider,
     from: String,
     to: String,
 ) -> Result<Vec<CalendarEvent>, String> {
-    oauth::fetch_events(provider, &from, &to).await
+    let events = oauth::fetch_events(provider, &from, &to).await?;
+    // 저장에 실패해도 받아 온 일정은 그대로 보여 줍니다.
+    if let Err(error) = cache.store(provider, &from, &to, events.clone()) {
+        eprintln!("일정 캐시 저장 실패: {error}");
+    }
+    Ok(events)
 }
 
 #[tauri::command]
@@ -351,6 +370,10 @@ pub fn run() {
                 let _ = dotenvy::from_path(config_dir.join(ENV_FILE));
             }
 
+            app.manage(EventCache::new(
+                app.path().app_local_data_dir()?.join(EVENT_CACHE_FILE),
+            ));
+
             let was_maximized = restore_position(app.handle()).unwrap_or(false);
             if desktop_pin::desktop_ready() {
                 place_initially(app.handle(), was_maximized);
@@ -395,6 +418,7 @@ pub fn run() {
             set_autostart,
             provider_status,
             connect,
+            cached_events,
             fetch_events,
             create_google_event,
             open_event_editor
