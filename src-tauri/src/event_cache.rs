@@ -1,9 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::ptr;
 use std::sync::Mutex;
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Security::Cryptography::{
+    CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+};
 
 use crate::oauth::{CalendarEvent, Provider};
 
@@ -37,6 +42,68 @@ fn entry_key(provider: Provider, from: &str, to: &str) -> String {
     format!("{provider}|{from}|{to}")
 }
 
+fn input_blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
+    CRYPT_INTEGER_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr().cast_mut(),
+    }
+}
+
+unsafe fn take_output(blob: CRYPT_INTEGER_BLOB) -> Vec<u8> {
+    unsafe {
+        let data = std::slice::from_raw_parts(blob.pbData, blob.cbData as usize).to_vec();
+        LocalFree(blob.pbData.cast());
+        data
+    }
+}
+
+// 일정에 회사 정보가 들어가므로 현재 Windows 계정만 풀 수 있게 DPAPI로 암호화합니다.
+fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
+    let input = input_blob(data);
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+    unsafe {
+        if CryptProtectData(
+            &input,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(take_output(output))
+    }
+}
+
+fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+    let input = input_blob(data);
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+    unsafe {
+        if CryptUnprotectData(
+            &input,
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        ) == 0
+        {
+            return None;
+        }
+        Some(take_output(output))
+    }
+}
+
 impl EventCache {
     pub fn new(path: PathBuf) -> Self {
         Self {
@@ -46,9 +113,11 @@ impl EventCache {
     }
 
     // 파일이 없거나 손상되어도 캐시일 뿐이므로 빈 상태로 시작합니다.
+    // 암호화 전에 저장된 평문 파일은 그대로 읽고 다음 저장 때 암호화합니다.
     fn read_entries(&self) -> BTreeMap<String, CachedEvents> {
         std::fs::read(&self.path)
             .ok()
+            .map(|content| unprotect(&content).unwrap_or(content))
             .and_then(|content| serde_json::from_slice(&content).ok())
             .unwrap_or_default()
     }
@@ -89,6 +158,7 @@ impl EventCache {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         let content = serde_json::to_vec(&entries).map_err(|error| error.to_string())?;
+        let content = protect(&content)?;
         // 저장 중 꺼져도 기존 파일이 깨지지 않도록 임시 파일을 거쳐 교체합니다.
         let temporary = self.path.with_extension("tmp");
         std::fs::write(&temporary, content).map_err(|error| error.to_string())?;
@@ -135,6 +205,34 @@ mod tests {
         assert_eq!(loaded.events[0].title, "회의");
         assert!(cache.load(Provider::Microsoft, "2026-11-01", "2026-12-06").is_none());
         assert!(cache.load(Provider::Google, "2026-12-01", "2027-01-03").is_none());
+    }
+
+    #[test]
+    fn stored_file_does_not_contain_plain_text() {
+        let cache = temp_cache("encrypted");
+        cache.store(Provider::Google, "a", "b", vec![event("secret-title")]).unwrap();
+
+        let content = std::fs::read(&cache.path).unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(&content).is_err());
+        assert!(!content.windows(12).any(|part| part == b"secret-title"));
+    }
+
+    #[test]
+    fn plain_text_file_is_encrypted_on_next_store() {
+        let cache = temp_cache("upgrade");
+        std::fs::create_dir_all(cache.path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache.path,
+            r#"{"google|a|b":{"events":[],"fetched_at":"2026-11-05 09:00:00"}}"#,
+        )
+        .unwrap();
+
+        cache.store(Provider::Google, "c", "d", Vec::new()).unwrap();
+
+        let content = std::fs::read(&cache.path).unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(&content).is_err());
+        assert!(cache.load(Provider::Google, "a", "b").is_some());
+        assert!(cache.load(Provider::Google, "c", "d").is_some());
     }
 
     #[test]
