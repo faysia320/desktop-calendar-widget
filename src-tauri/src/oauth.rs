@@ -907,6 +907,129 @@ async fn fetch_microsoft(
     }
 }
 
+// 회의실 주소는 회사 정보라 저장소가 아니라 .env.local에 둡니다.
+fn room_addresses() -> Vec<String> {
+    std::env::var("MICROSOFT_ROOMS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|address| !address.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn room_name(index: usize) -> String {
+    format!("회의실 {}", index + 1)
+}
+
+pub fn room_names() -> Vec<String> {
+    (0..room_addresses().len()).map(room_name).collect()
+}
+
+#[derive(Deserialize)]
+struct GraphSchedules {
+    #[serde(default)]
+    value: Vec<GraphSchedule>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphSchedule {
+    schedule_id: String,
+    #[serde(default)]
+    schedule_items: Vec<GraphScheduleItem>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct GraphScheduleItem {
+    status: Option<String>,
+    subject: Option<String>,
+    start: GraphTime,
+    end: GraphTime,
+}
+
+fn room_bookings(addresses: &[String], schedules: GraphSchedules) -> Result<Vec<CalendarEvent>, String> {
+    let mut bookings = Vec::new();
+    for schedule in schedules.value {
+        // 일부 회의실을 읽지 못했을 때 예약이 없는 것처럼 보이면 안 됩니다.
+        if let Some(error) = schedule.error {
+            return Err(format!("회의실 일정 조회 실패({}): {error}", schedule.schedule_id));
+        }
+        let Some(index) = addresses
+            .iter()
+            .position(|address| address.eq_ignore_ascii_case(&schedule.schedule_id))
+        else {
+            continue;
+        };
+        let name = room_name(index);
+        bookings.extend(
+            schedule
+                .schedule_items
+                .into_iter()
+                .filter(|item| item.status.as_deref() != Some("free"))
+                .map(|item| {
+                    let start = item.start.display(false);
+                    CalendarEvent {
+                        id: format!("{name}|{start}"),
+                        title: item
+                            .subject
+                            .filter(|subject| !subject.is_empty())
+                            .unwrap_or_else(|| "예약됨".to_string()),
+                        start,
+                        end: item.end.display(false),
+                        all_day: false,
+                        location: None,
+                        calendar_id: Some(name.clone()),
+                        color: None,
+                        text_color: None,
+                        editable: false,
+                    }
+                }),
+        );
+    }
+    Ok(bookings)
+}
+
+/// `from`부터 `to` 전날까지의 회의실 예약을 가져옵니다. 일정 제목은 회의실 공개 범위를 따릅니다.
+pub async fn fetch_rooms(from: &str, to: &str) -> Result<Vec<CalendarEvent>, String> {
+    let addresses = room_addresses();
+    if addresses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let graph_time = |time: DateTime<Local>| {
+        serde_json::json!({
+            "dateTime": time.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "timeZone": "UTC",
+        })
+    };
+    let start = local_midnight(parse_date(from)?)?;
+    let end = local_midnight(parse_date(to)?)?;
+    let access_token = access_token(Provider::Microsoft).await?;
+    let response = http_client()?
+        .post("https://graph.microsoft.com/v1.0/me/calendar/getSchedule")
+        .bearer_auth(&access_token)
+        .header("Prefer", "outlook.timezone=\"UTC\"")
+        .json(&serde_json::json!({
+            "schedules": addresses,
+            "startTime": graph_time(start),
+            "endTime": graph_time(end),
+        }))
+        .send()
+        .await
+        .map_err(|error| request_error("회의실 일정 요청", error))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("회의실 일정 요청 실패({status}): {body}"));
+    }
+    let schedules = response
+        .json()
+        .await
+        .map_err(|error| format!("회의실 일정 응답 해석 실패: {error}"))?;
+    room_bookings(&addresses, schedules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1139,6 +1262,49 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         assert_eq!(decode_refresh_token(&old_value).unwrap(), "abc.-_1");
+    }
+
+    fn parsed_schedules(body: &str) -> GraphSchedules {
+        serde_json::from_str(body).unwrap()
+    }
+
+    #[test]
+    fn room_bookings_follow_the_configured_room_order() {
+        let addresses = vec!["room1@example.com".to_string(), "room2@example.com".to_string()];
+        let bookings = room_bookings(
+            &addresses,
+            parsed_schedules(
+                r#"{"value":[
+                    {"scheduleId":"ROOM2@example.com","error":null,"scheduleItems":[
+                        {"status":"busy","subject":"예약자","start":{"dateTime":"2026-11-05T02:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-05T03:00:00.0000000","timeZone":"UTC"}},
+                        {"status":"free","subject":"빈 시간","start":{"dateTime":"2026-11-05T04:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-05T05:00:00.0000000","timeZone":"UTC"}},
+                        {"status":"busy","start":{"dateTime":"2026-11-05T06:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-05T07:00:00.0000000","timeZone":"UTC"}}
+                    ]},
+                    {"scheduleId":"other@example.com","scheduleItems":[
+                        {"status":"busy","subject":"다른 회의실","start":{"dateTime":"2026-11-05T02:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-05T03:00:00.0000000","timeZone":"UTC"}}
+                    ]}
+                ]}"#,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(bookings.len(), 2);
+        assert_eq!(bookings[0].title, "예약자");
+        assert_eq!(bookings[0].calendar_id.as_deref(), Some("회의실 2"));
+        assert_eq!(bookings[1].title, "예약됨");
+    }
+
+    #[test]
+    fn room_error_is_not_shown_as_an_empty_schedule() {
+        let addresses = vec!["room1@example.com".to_string()];
+        let result = room_bookings(
+            &addresses,
+            parsed_schedules(
+                r#"{"value":[{"scheduleId":"room1@example.com","error":{"message":"denied"}}]}"#,
+            ),
+        );
+
+        assert!(result.is_err());
     }
 
     // 실제 Credential Manager를 사용하므로 직접 지정할 때만 실행합니다.

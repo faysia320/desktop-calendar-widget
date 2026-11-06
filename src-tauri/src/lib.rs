@@ -30,6 +30,7 @@ const EVENT_CACHE_FILE: &str = "event-cache.json";
 const HOLIDAY_CACHE_FILE: &str = "holiday-cache.json";
 const POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 // 창 왼쪽 위 모서리만 걸친 위치로 복원되어 위젯을 잡을 수 없게 되는 것을 막습니다.
+const ROOM_CACHE_FILE: &str = "room-cache.json";
 const MIN_VISIBLE_PX: i32 = 100;
 const DESKTOP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const DESKTOP_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -45,6 +46,8 @@ struct WidgetState {
     summoned: AtomicBool,
     quitting: AtomicBool,
     position_save_generation: AtomicU64,
+struct RoomCache(EventCache);
+
     // 최대화 중일 때만 값이 있으며, 되돌아갈 화면 기준 위치와 크기입니다.
     normal_rect: Mutex<Option<RECT>>,
     shortcut_error: Mutex<Option<String>>,
@@ -434,6 +437,7 @@ async fn open_event_editor(
     app: AppHandle,
     date: String,
     target: Option<EditorTarget>,
+    rooms: Vec<String>,
 ) -> Result<(), String> {
     let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|error| error.to_string())?;
     let mut query = url::form_urlencoded::Serializer::new(String::new());
@@ -477,6 +481,7 @@ async fn open_event_editor(
         .build()
         .map_err(|error| error.to_string())?;
     place_editor_over_widget(&app, &window);
+        rooms: oauth::room_names(),
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     app.emit(EDITOR_OPEN_EVENT, true)
@@ -581,6 +586,31 @@ pub fn run() {
             autostart_enabled,
             set_autostart,
             provider_status,
+// 회의실도 부가 정보라 공휴일처럼 저장된 값으로 대신합니다.
+#[tauri::command]
+async fn rooms(
+    cache: State<'_, RoomCache>,
+    from: String,
+    to: String,
+) -> Result<Vec<CalendarEvent>, String> {
+    match oauth::fetch_rooms(&from, &to).await {
+        Ok(bookings) => {
+            if let Err(error) = cache.0.store(Provider::Microsoft, &from, &to, bookings.clone()) {
+                eprintln!("회의실 캐시 저장 실패: {error}");
+            }
+            Ok(bookings)
+        }
+        Err(error) => {
+            eprintln!("회의실 일정 조회 실패: {error}");
+            Ok(cache
+                .0
+                .load(Provider::Microsoft, &from, &to)
+                .map(|cached| cached.into_events())
+                .unwrap_or_default())
+        }
+    }
+}
+
             connect,
             cached_events,
             fetch_events,
@@ -624,3 +654,7 @@ mod tests {
         assert!(new.maximized);
     }
 }
+            app.manage(RoomCache(EventCache::new(
+                app.path().app_local_data_dir()?.join(ROOM_CACHE_FILE),
+            )));
+            rooms,

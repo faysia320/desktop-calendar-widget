@@ -19,7 +19,11 @@ import {
   formatEventTime,
   formatFetchedAt,
   holidayName,
+  minuteOfDay,
+  minutesOnDay,
   occursOn,
+  roomColorSlots,
+  roomHourRange,
   toDayKey,
   toMinuteKey,
 } from "./events";
@@ -107,6 +111,7 @@ function useBackgroundTransparency() {
 type WidgetStatus = {
   maximized: boolean;
   shortcut_error: string | null;
+  rooms: string[];
 };
 
 type ProviderStatus = {
@@ -126,6 +131,7 @@ function useCalendarEvents(range: DayRange | null) {
   // 저장된 일정을 보여 주는 동안 그 일정을 가져온 시각입니다.
   const [staleSince, setStaleSince] = useState<Partial<Record<Provider, string>>>({});
   const [holidays, setHolidays] = useState<RemoteEvent[]>([]);
+  const [roomBookings, setRoomBookings] = useState<RemoteEvent[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const latestRequest = useRef(0);
@@ -142,6 +148,9 @@ function useCalendarEvents(range: DayRange | null) {
 
       invoke<RemoteEvent[]>("holidays", { ...range }).then((items) => {
         if (request === latestRequest.current) setHolidays(items);
+      });
+      invoke<RemoteEvent[]>("rooms", { ...range }).then((items) => {
+        if (request === latestRequest.current) setRoomBookings(items);
       });
 
       const rangeKey = `${range.from}|${range.to}`;
@@ -204,7 +213,7 @@ function useCalendarEvents(range: DayRange | null) {
     [eventsByProvider],
   );
 
-  return { statuses, events, holidays, errors, staleSince, refreshing, syncedAt, setErrors, refresh };
+  return { statuses, events, holidays, roomBookings, errors, staleSince, refreshing, syncedAt, setErrors, refresh };
 }
 
 // 시간이 지나도 진행 중 표시와 오늘 날짜가 맞도록 현재 시각을 주기적으로 갱신합니다.
@@ -388,6 +397,85 @@ function EventRow({ event, now, onEdit }: { event: CalendarEvent; now: string; o
   );
 }
 
+// 내 일정과 섞이지 않도록 고른 날의 회의실 예약을 상세 패널 아래에 가로 시간표로 보여 줍니다.
+function RoomSchedules({
+  names,
+  bookings,
+  day,
+  now,
+}: {
+  names: string[];
+  bookings: RemoteEvent[];
+  day: string;
+  now: string;
+}) {
+  const dayBookings = bookings.filter((booking) => occursOn(booking, day));
+  const { from, to } = roomHourRange(dayBookings, day);
+  const colorSlots = roomColorSlots(dayBookings);
+  const hours = Array.from({ length: to - from + 1 }, (_, index) => from + index);
+  const percent = (minutes: number) => (minutes / ((to - from) * 60)) * 100;
+  const nowOffset = minuteOfDay(now) - from * 60;
+  const showNow = now.startsWith(day) && nowOffset >= 0 && nowOffset <= (to - from) * 60;
+
+  return (
+    <section
+      className="rooms"
+      aria-label="회의실 예약"
+      style={{ "--room-hours": to - from } as CSSProperties}
+    >
+      <div className="room-row">
+        <span />
+        <div className="room-axis">
+          {hours.map((hour) => (
+            <span
+              className={hour % 2 === 0 ? "room-hour" : "room-hour odd"}
+              key={hour}
+              style={{ left: `${percent((hour - from) * 60)}%` }}
+            >
+              {hour}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="room-rows">
+        {names.map((name) => (
+          <div className="room-row" key={name}>
+            <h3 className="room-name">{name}</h3>
+            <ul className="room-track">
+              {dayBookings
+                .filter((booking) => booking.calendar_id === name)
+                .map((booking) => {
+                  const { start, end } = minutesOnDay(booking, day);
+                  return (
+                    <li
+                      className={`room-booking event-${eventPhase(booking, now)}`}
+                      key={booking.id}
+                      title={`${formatEventTime(booking)} ${booking.title}`}
+                      style={
+                        {
+                          "--room-color": `var(--room-color-${colorSlots.get(booking.title.trim())})`,
+                          left: `${percent(start - from * 60)}%`,
+                          width: `${percent(end - start)}%`,
+                        } as CSSProperties
+                      }
+                    >
+                      <span className="room-booking-title">{booking.title}</span>
+                    </li>
+                  );
+                })}
+            </ul>
+          </div>
+        ))}
+        {showNow && (
+          <div className="room-now-layer">
+            <span className="room-now" style={{ left: `${percent(nowOffset)}%` }} />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function AutostartToggle() {
   const [enabled, setEnabled] = useState(false);
   const [error, setError] = useState("");
@@ -437,7 +525,7 @@ function Widget() {
   const calendarRef = useRef<FullCalendar>(null);
   const shownToday = useRef(today);
   const lastWheel = useRef(0);
-  const { statuses, events, holidays, errors, staleSince, refreshing, syncedAt, setErrors, refresh } =
+  const { statuses, events, holidays, roomBookings, errors, staleSince, refreshing, syncedAt, setErrors, refresh } =
     useCalendarEvents(range);
 
   useEffect(() => {
@@ -707,6 +795,10 @@ function Widget() {
                   />
                 ))}
               </ul>
+            )}
+
+            {status && status.rooms.length > 0 && (
+              <RoomSchedules names={status.rooms} bookings={roomBookings} day={selectedDay} now={minuteNow} />
             )}
 
             <Notices

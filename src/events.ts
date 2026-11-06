@@ -43,6 +43,48 @@ export function occursOn(event: RemoteEvent, day: string): boolean {
   return startDay === endDay || event.end.slice(11) !== "00:00";
 }
 
+const MINUTES_PER_DAY = 24 * 60;
+const ROOM_DEFAULT_HOURS = { from: 9, to: 18 };
+const ROOM_COLOR_COUNT = 8;
+
+// "YYYY-MM-DD HH:mm"에서 그날 자정부터 지난 분을 구합니다.
+export function minuteOfDay(time: string): number {
+  return Number(time.slice(11, 13)) * 60 + Number(time.slice(14, 16));
+}
+
+// 여러 날에 걸친 일정은 해당 날짜 안으로 잘라서 돌려줍니다.
+export function minutesOnDay(event: RemoteEvent, day: string): { start: number; end: number } {
+  return {
+    start: event.start.slice(0, 10) < day ? 0 : minuteOfDay(event.start),
+    end: event.end.slice(0, 10) > day ? MINUTES_PER_DAY : minuteOfDay(event.end),
+  };
+}
+
+// 기본 시간대를 벗어난 예약이 있으면 잘리지 않도록 시간축을 넓힙니다.
+export function roomHourRange(bookings: RemoteEvent[], day: string): { from: number; to: number } {
+  return bookings.reduce(({ from, to }, booking) => {
+    const { start, end } = minutesOnDay(booking, day);
+    return {
+      from: Math.min(from, Math.floor(start / 60)),
+      to: Math.max(to, Math.ceil(end / 60)),
+    };
+  }, ROOM_DEFAULT_HOURS);
+}
+
+// 회의실 예약의 제목이 예약자 이름입니다. 같은 사람은 어느 날이든 같은 색을 받되,
+// 그날 먼저 차지한 색과 겹치면 다음 색을 씁니다. 색보다 예약자가 많으면 같은 색을 나눠 씁니다.
+export function roomColorSlots(bookings: RemoteEvent[]): Map<string, number> {
+  const slots = new Map<string, number>();
+  const owners = [...new Set(bookings.map((booking) => booking.title.trim()))].sort();
+  for (const owner of owners) {
+    let slot = [...owner].reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 0) % ROOM_COLOR_COUNT;
+    const taken = new Set(slots.values());
+    while (taken.has(slot) && taken.size < ROOM_COLOR_COUNT) slot = (slot + 1) % ROOM_COLOR_COUNT;
+    slots.set(owner, slot);
+  }
+  return slots;
+}
+
 export function holidayName(holidays: RemoteEvent[], day: string): string {
   return holidays
     .filter((holiday) => occursOn(holiday, day))

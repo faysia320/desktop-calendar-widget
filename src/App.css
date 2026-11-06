@@ -12,6 +12,14 @@
   --success: #1f8f4e;
   --google: #1a73e8;
   --microsoft: #c2570c;
+  --room-color-0: #2a78d6;
+  --room-color-1: #eb6834;
+  --room-color-2: #1baf7a;
+  --room-color-3: #eda100;
+  --room-color-4: #e87ba4;
+  --room-color-5: #008300;
+  --room-color-6: #6250d6;
+  --room-color-7: #e34948;
   --sunday: #d6293b;
   --saturday: #0b62c4;
   /* 유리 시트의 바탕과, 그 안에서 빛이 번진 듯 보이게 하는 색입니다. */
@@ -56,6 +64,14 @@
     --success: #5bd38b;
     --google: #6aa9f5;
     --microsoft: #f0a35e;
+    --room-color-0: #3987e5;
+    --room-color-1: #d95926;
+    --room-color-2: #199e70;
+    --room-color-3: #c98500;
+    --room-color-4: #d55181;
+    --room-color-5: #008300;
+    --room-color-6: #9085e9;
+    --room-color-7: #e66767;
     --sunday: #ff7f84;
     --saturday: #76b4ff;
     --sheet-base: #1a1c21;
@@ -77,6 +93,14 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+  --room-color-0: #3987e5;
+  --room-color-1: #d95926;
+  --room-color-2: #199e70;
+  --room-color-3: #c98500;
+  --room-color-4: #d55181;
+  --room-color-5: #008300;
+  --room-color-6: #9085e9;
+  --room-color-7: #e66767;
   --text: #f5f5f7;
   --muted-solid: #aeaeb6;
   --faint-solid: #85858d;
@@ -634,6 +658,123 @@ p {
   list-style: none;
 }
 
+.rooms {
+  --room-label-width: 48px;
+  flex: none;
+  padding: 8px 8px 0 4px;
+  border-top: 1px solid var(--hairline);
+  container-type: inline-size;
+}
+
+.room-row {
+  display: grid;
+  grid-template-columns: var(--room-label-width) minmax(0, 1fr);
+  align-items: center;
+}
+
+.room-rows {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.room-axis {
+  position: relative;
+  height: 14px;
+}
+
+.room-hour {
+  position: absolute;
+  top: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  transform: translateX(-50%);
+}
+
+.room-name {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* 1시간마다 세로선을 그립니다. */
+.room-track {
+  position: relative;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background:
+    linear-gradient(to right, var(--hairline) 1px, transparent 1px) 0 0 / calc(100% / var(--room-hours)) 100%,
+    color-mix(in srgb, var(--faint) 12%, transparent);
+  list-style: none;
+}
+
+.room-booking {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  display: flex;
+  align-items: center;
+  min-width: 3px;
+  padding: 0 4px 0 7px;
+  overflow: hidden;
+  border-radius: 3px;
+  /* border-left는 모서리 곡률을 따라 휘므로, 안쪽 경계가 곧은 띠를 배경으로 그립니다. */
+  background:
+    linear-gradient(to right, var(--room-color) 3px, transparent 3px),
+    color-mix(in srgb, var(--room-color) var(--room-fill, 30%), transparent);
+}
+
+.room-booking.event-past {
+  opacity: 0.5;
+}
+
+.room-booking.event-ongoing {
+  --room-fill: 55%;
+}
+
+.room-booking-title {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.room-now-layer {
+  position: absolute;
+  inset: 0 0 0 var(--room-label-width);
+  pointer-events: none;
+}
+
+.room-now {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+/* 좁은 패널에서는 제목이 들어가지 않으므로 블록과 짝수 시각만 보여 줍니다. 전체 내용은 툴팁으로 봅니다. */
+@container (max-width: 400px) {
+  .room-hour.odd,
+  .room-booking-title {
+    display: none;
+  }
+
+  .room-booking {
+    padding: 0;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -1081,6 +1222,11 @@ p {
   border-radius: 0;
 }
 
+/* 포커스 표시가 그룹의 둥근 모서리에 잘리지 않도록 같은 곡률로 그립니다. */
+.editor-group > input:focus-visible {
+  border-radius: 12px;
+}
+
 .editor input::placeholder {
   color: var(--faint);
 }
@@ -1172,8 +1318,3 @@ p {
     transition: none !important;
   }
 }
-/* 포커스 표시가 그룹의 둥근 모서리에 잘리지 않도록 같은 곡률로 그립니다. */
-.editor-group > input:focus-visible {
-  border-radius: 12px;
-}
-

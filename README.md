@@ -37,3 +37,4 @@ pnpm tauri build --no-bundle
 2. "모바일 및 데스크톱 애플리케이션" 플랫폼에 리디렉션 URI `http://localhost`를 추가합니다.
 3. API 사용 권한에 Microsoft Graph의 위임된 권한 `Calendars.Read`를 추가합니다.
 4. 애플리케이션 ID를 `MICROSOFT_CLIENT_ID`, 디렉터리(테넌트) ID를 `MICROSOFT_TENANT_ID`에 입력합니다.
+5. 회의실 예약도 보려면 회의실 메일 주소를 쉼표로 구분해 `MICROSOFT_ROOMS`에 입력합니다. 입력한 순서대로 `회의실 1`, `회의실 2`로 표시합니다.
