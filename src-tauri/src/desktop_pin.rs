@@ -9,7 +9,7 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowRect, HWND_TOP, HWND_TOPMOST,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetParent, SetWindowLongPtrW,
-    SetWindowPos, WS_CHILD, WS_POPUP,
+    SetWindowPos, WS_CAPTION, WS_CHILD, WS_POPUP,
 };
 
 fn window_handle(window: &WebviewWindow) -> Result<HWND, String> {
@@ -97,7 +97,12 @@ pub fn pin_to_desktop(window: &WebviewWindow) -> Result<(), String> {
         GetWindowRect(progman, &mut desktop);
 
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
-        SetWindowLongPtrW(hwnd, GWL_STYLE, ((style & !WS_POPUP) | WS_CHILD) as isize);
+        // 캡션 스타일이 남은 자식 창은 Windows가 위쪽 모서리를 둥글게 잘라 냅니다.
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            ((style & !(WS_POPUP | WS_CAPTION)) | WS_CHILD) as isize,
+        );
         if SetParent(hwnd, progman).is_null() {
             SetWindowLongPtrW(hwnd, GWL_STYLE, style as isize);
             return Err("바탕화면에 위젯을 넣을 수 없습니다.".to_string());
@@ -125,7 +130,11 @@ pub fn float_on_top(window: &WebviewWindow) -> Result<(), String> {
             return Err("바탕화면에서 위젯을 꺼낼 수 없습니다.".to_string());
         }
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
-        SetWindowLongPtrW(hwnd, GWL_STYLE, ((style & !WS_CHILD) | WS_POPUP) as isize);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            ((style & !WS_CHILD) | WS_POPUP | WS_CAPTION) as isize,
+        );
         SetWindowPos(
             hwnd,
             HWND_TOPMOST,
