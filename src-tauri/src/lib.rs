@@ -11,6 +11,8 @@ use chrono::NaiveDate;
 use event_cache::{CachedEvents, EventCache};
 use oauth::{CalendarEvent, GoogleCalendar, NewEvent, Provider, ProviderStatus};
 use serde::{Deserialize, Serialize};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
@@ -28,30 +30,88 @@ const ENV_FILE: &str = ".env.local";
 const POSITION_FILE: &str = "window-position.json";
 const EVENT_CACHE_FILE: &str = "event-cache.json";
 const HOLIDAY_CACHE_FILE: &str = "holiday-cache.json";
+const ROOM_CACHE_FILE: &str = "room-cache.json";
 const POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 // 창 왼쪽 위 모서리만 걸친 위치로 복원되어 위젯을 잡을 수 없게 되는 것을 막습니다.
-const ROOM_CACHE_FILE: &str = "room-cache.json";
 const MIN_VISIBLE_PX: i32 = 100;
 const DESKTOP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const DESKTOP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 // Explorer가 Progman을 만든 직후에는 자식 창이 아직 준비되지 않아 잠시 기다립니다.
 const DESKTOP_SETTLE_DELAY: Duration = Duration::from_secs(2);
 const PAGE_START_TIMEOUT: Duration = Duration::from_secs(30);
+const MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const TRAY_SHOW_ID: &str = "show";
+const TRAY_QUIT_ID: &str = "quit";
 
 // 일정 캐시의 용량을 차지하지 않도록 공휴일은 별도 파일에 Google 항목으로 저장합니다.
 struct HolidayCache(EventCache);
+
+struct RoomCache(EventCache);
 
 #[derive(Default)]
 struct WidgetState {
     summoned: AtomicBool,
     quitting: AtomicBool,
     position_save_generation: AtomicU64,
-struct RoomCache(EventCache);
-
     // 최대화 중일 때만 값이 있으며, 되돌아갈 화면 기준 위치와 크기입니다.
     normal_rect: Mutex<Option<RECT>>,
     shortcut_error: Mutex<Option<String>>,
     page_started: AtomicBool,
+    // 위젯이 따라간 마지막 모니터 배치입니다.
+    layout: Mutex<Option<DisplayLayout>>,
+    // 저장된 모니터가 빠져 다른 모니터에 임시로 옮겨 둔 상태입니다.
+    away_from_home: AtomicBool,
+}
+
+#[derive(Clone, PartialEq)]
+struct MonitorBox {
+    name: String,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+impl MonitorBox {
+    fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
+    }
+}
+
+// 바탕화면 창은 모니터보다 늦게 바뀌고 자식 창의 좌표 기준이므로 함께 비교합니다.
+#[derive(Clone, PartialEq)]
+struct DisplayLayout {
+    monitors: Vec<MonitorBox>,
+    desktop: Option<(i32, i32, i32, i32)>,
+}
+
+impl DisplayLayout {
+    fn read(window: &WebviewWindow) -> Option<Self> {
+        let monitors: Vec<MonitorBox> = window
+            .available_monitors()
+            .ok()?
+            .iter()
+            .map(|monitor| MonitorBox {
+                name: monitor.name().cloned().unwrap_or_default(),
+                x: monitor.position().x,
+                y: monitor.position().y,
+                width: monitor.size().width as i32,
+                height: monitor.size().height as i32,
+            })
+            .collect();
+        (!monitors.is_empty()).then_some(Self {
+            monitors,
+            desktop: desktop_pin::desktop_rect(),
+        })
+    }
+}
+
+/// 저장할 때 위젯이 있던 모니터와 그 모니터의 당시 위치입니다.
+#[derive(Serialize, Deserialize)]
+struct MonitorAnchor {
+    name: String,
+    x: i32,
+    y: i32,
 }
 
 /// 최대화 중에도 x, y, 크기는 최대화 전 값을 저장합니다.
@@ -66,25 +126,76 @@ struct Placement {
     height: Option<i32>,
     #[serde(default)]
     maximized: bool,
+    #[serde(default)]
+    monitor: Option<MonitorAnchor>,
+}
+
+impl Placement {
+    /// 모니터 배치가 바뀌면 같은 모니터의 좌표도 달라지므로 그 모니터의 현재 위치로 옮겨 돌려줍니다.
+    fn home_position(&self, monitors: &[MonitorBox]) -> Option<(i32, i32)> {
+        let anchor = self.monitor.as_ref()?;
+        let monitor = monitors.iter().find(|monitor| monitor.name == anchor.name)?;
+        Some((
+            (self.x - anchor.x + monitor.x).clamp(monitor.x, monitor.x + monitor.width - MIN_VISIBLE_PX),
+            (self.y - anchor.y + monitor.y).clamp(monitor.y, monitor.y + monitor.height - MIN_VISIBLE_PX),
+        ))
+    }
+}
+
+/// 크기를 영역 안으로 줄이고 영역을 벗어나지 않게 옮깁니다.
+fn fit_rect(rect: RECT, area: RECT) -> RECT {
+    let width = (rect.right - rect.left).min(area.right - area.left);
+    let height = (rect.bottom - rect.top).min(area.bottom - area.top);
+    let left = rect.left.clamp(area.left, area.right - width);
+    let top = rect.top.clamp(area.top, area.bottom - height);
+    RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    }
 }
 
 fn position_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(app.path().app_config_dir().ok()?.join(POSITION_FILE))
 }
 
+fn read_placement(app: &AppHandle) -> Option<Placement> {
+    let saved = std::fs::read(position_path(app)?).ok()?;
+    serde_json::from_slice(&saved).ok()
+}
+
 fn save_position(app: &AppHandle) -> Option<()> {
     let window = app.get_webview_window(MAIN_LABEL)?;
-    let normal_rect = *app.state::<WidgetState>().normal_rect.lock().unwrap();
+    let state = app.state::<WidgetState>();
+    // 임시 위치나 배치가 바뀌는 중의 위치가 사용자가 둔 위치를 덮어쓰면 안 됩니다.
+    let layout = DisplayLayout::read(&window)?;
+    if state.away_from_home.load(Ordering::SeqCst)
+        || state.layout.lock().unwrap().as_ref() != Some(&layout)
+    {
+        return None;
+    }
+    let normal_rect = *state.normal_rect.lock().unwrap();
     let rect = match normal_rect {
         Some(rect) => rect,
         None => desktop_pin::screen_rect(&window)?,
     };
+    let (center_x, center_y) = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
     let placement = Placement {
         x: rect.left,
         y: rect.top,
         width: Some(rect.right - rect.left),
         height: Some(rect.bottom - rect.top),
         maximized: normal_rect.is_some(),
+        monitor: layout
+            .monitors
+            .iter()
+            .find(|monitor| monitor.contains(center_x, center_y))
+            .map(|monitor| MonitorAnchor {
+                name: monitor.name.clone(),
+                x: monitor.x,
+                y: monitor.y,
+            }),
     };
     let path = position_path(app)?;
     std::fs::create_dir_all(path.parent()?).ok()?;
@@ -130,21 +241,23 @@ fn schedule_position_save(app: &AppHandle) {
 /// 저장된 위치와 크기를 적용하고, 최대화 상태였는지 돌려줍니다.
 fn restore_position(app: &AppHandle) -> Option<bool> {
     let window = app.get_webview_window(MAIN_LABEL)?;
-    let saved = std::fs::read(position_path(app)?).ok()?;
-    let placement: Placement = serde_json::from_slice(&saved).ok()?;
-    let (x, y) = (placement.x, placement.y);
-    // 저장할 때 쓰던 모니터가 빠졌으면 기본 위치에 둡니다.
-    let visible = window.available_monitors().ok()?.iter().any(|monitor| {
-        let origin = monitor.position();
-        let size = monitor.size();
-        x + MIN_VISIBLE_PX > origin.x
-            && y + MIN_VISIBLE_PX > origin.y
-            && x + MIN_VISIBLE_PX < origin.x + size.width as i32
-            && y + MIN_VISIBLE_PX < origin.y + size.height as i32
-    });
-    if !visible {
-        return Some(false);
-    }
+    let placement = read_placement(app)?;
+    let monitors = DisplayLayout::read(&window)?.monitors;
+    let (x, y) = match placement.home_position(&monitors) {
+        Some(position) => position,
+        // 저장할 때 쓰던 모니터가 빠졌으면 기본 위치에 두고, 다시 꽂으면 돌아갑니다.
+        None if placement.monitor.is_some() => {
+            app.state::<WidgetState>().away_from_home.store(true, Ordering::SeqCst);
+            return Some(placement.maximized);
+        }
+        None if monitors
+            .iter()
+            .any(|monitor| monitor.contains(placement.x + MIN_VISIBLE_PX, placement.y + MIN_VISIBLE_PX)) =>
+        {
+            (placement.x, placement.y)
+        }
+        None => return Some(false),
+    };
     window.set_position(PhysicalPosition::new(x, y)).ok()?;
     if let (Some(width), Some(height)) = (placement.width, placement.height) {
         window
@@ -152,6 +265,125 @@ fn restore_position(app: &AppHandle) -> Option<bool> {
             .ok()?;
     }
     Some(placement.maximized)
+}
+
+/// 저장된 모니터가 있으면 그곳으로, 없으면 보이는 모니터로 위젯을 옮깁니다. 최대화 상태는 유지합니다.
+fn follow_monitors(app: &AppHandle) -> Option<()> {
+    let window = app.get_webview_window(MAIN_LABEL)?;
+    let state = app.state::<WidgetState>();
+    let layout = DisplayLayout::read(&window)?;
+    let monitors = layout.monitors.clone();
+    *state.layout.lock().unwrap() = Some(layout);
+
+    let mut normal_rect = state.normal_rect.lock().unwrap();
+    let current = match *normal_rect {
+        Some(rect) => rect,
+        None => desktop_pin::screen_rect(&window)?,
+    };
+    let (width, height) = (current.right - current.left, current.bottom - current.top);
+    let at = |x: i32, y: i32| RECT {
+        left: x,
+        top: y,
+        right: x + width,
+        bottom: y + height,
+    };
+
+    let placement = read_placement(app);
+    let home = placement.as_ref().and_then(|placement| placement.home_position(&monitors));
+    let away = home.is_none() && placement.is_some_and(|placement| placement.monitor.is_some());
+    state.away_from_home.store(away, Ordering::SeqCst);
+
+    let wanted = match home {
+        Some((x, y)) => at(x, y),
+        None if monitors
+            .iter()
+            .any(|monitor| monitor.contains(current.left + MIN_VISIBLE_PX, current.top + MIN_VISIBLE_PX)) =>
+        {
+            current
+        }
+        None => {
+            let primary = window.primary_monitor().ok().flatten()?;
+            at(primary.position().x, primary.position().y)
+        }
+    };
+    let area = desktop_pin::work_area_of(wanted)?;
+    let normal = fit_rect(wanted, area);
+    if normal_rect.is_some() {
+        desktop_pin::move_to(&window, area).ok()?;
+        *normal_rect = Some(normal);
+    } else {
+        desktop_pin::move_to(&window, normal).ok()?;
+    }
+    Some(())
+}
+
+// 실행 중에 모니터 배치가 바뀌면 위젯이 바탕화면 밖에 남아 보이지 않게 됩니다.
+fn watch_monitors(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut previous = None;
+        loop {
+            std::thread::sleep(MONITOR_POLL_INTERVAL);
+            let Some(layout) = app
+                .get_webview_window(MAIN_LABEL)
+                .and_then(|window| DisplayLayout::read(&window))
+            else {
+                continue;
+            };
+            // 선을 꽂는 동안에는 배치가 여러 번 바뀌므로 같은 값이 연달아 읽힐 때만 따라갑니다.
+            let settled = previous.as_ref() == Some(&layout);
+            let changed = app.state::<WidgetState>().layout.lock().unwrap().as_ref() != Some(&layout);
+            previous = Some(layout);
+            if settled && changed {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    follow_monitors(&handle);
+                });
+            }
+        }
+    });
+}
+
+// 트레이에서 부를 때는 어디에 있든 보이도록 먼저 화면 안으로 옮깁니다.
+fn summon_from_tray(app: &AppHandle) {
+    follow_monitors(app);
+    if let Err(error) = toggle_summoned(app) {
+        eprintln!("위젯 전환 실패: {error}");
+    }
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, TRAY_SHOW_ID, "위젯 보이기", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "종료", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let mut tray = TrayIconBuilder::new()
+        .tooltip("캘린더 위젯")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => {
+                if !app.state::<WidgetState>().summoned.load(Ordering::SeqCst) {
+                    summon_from_tray(app);
+                }
+            }
+            TRAY_QUIT_ID => quit_app(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                summon_from_tray(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 fn wait_for_desktop() {
@@ -183,6 +415,8 @@ fn place_initially(app: &AppHandle, maximized: bool) {
             eprintln!("위젯 최대화 실패: {error}");
         }
     }
+    // 시작할 때는 이동 이벤트가 오지 않을 수 있어, 예전 파일에도 모니터 정보가 남도록 직접 저장합니다.
+    schedule_position_save(app);
 }
 
 // WebView2가 내장 페이지 응답을 받지 못하면 빈 투명 창으로 남고 새로고침으로도 복구되지 않습니다.
@@ -203,6 +437,7 @@ fn restart_if_page_never_starts(app: &AppHandle) {
 struct WidgetStatus {
     maximized: bool,
     shortcut_error: Option<String>,
+    rooms: Vec<String>,
 }
 
 /// 단축키로 불렀으면 맨 위에, 그 외에는 바탕화면에 둡니다.
@@ -246,6 +481,7 @@ fn widget_status(state: State<'_, WidgetState>) -> WidgetStatus {
     WidgetStatus {
         maximized: state.normal_rect.lock().unwrap().is_some(),
         shortcut_error: state.shortcut_error.lock().unwrap().clone(),
+        rooms: oauth::room_names(),
     }
 }
 
@@ -258,10 +494,14 @@ fn toggle_maximized(app: AppHandle, state: State<'_, WidgetState>) -> Result<boo
     Ok(maximized)
 }
 
-#[tauri::command]
-fn quit(app: AppHandle, state: State<'_, WidgetState>) {
-    state.quitting.store(true, Ordering::SeqCst);
+fn quit_app(app: &AppHandle) {
+    app.state::<WidgetState>().quitting.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+#[tauri::command]
+fn quit(app: AppHandle) {
+    quit_app(&app);
 }
 
 #[tauri::command]
@@ -340,6 +580,31 @@ async fn holidays(
             Ok(cache
                 .0
                 .load(Provider::Google, &from, &to)
+                .map(|cached| cached.into_events())
+                .unwrap_or_default())
+        }
+    }
+}
+
+// 회의실도 부가 정보라 공휴일처럼 저장된 값으로 대신합니다.
+#[tauri::command]
+async fn rooms(
+    cache: State<'_, RoomCache>,
+    from: String,
+    to: String,
+) -> Result<Vec<CalendarEvent>, String> {
+    match oauth::fetch_rooms(&from, &to).await {
+        Ok(bookings) => {
+            if let Err(error) = cache.0.store(Provider::Microsoft, &from, &to, bookings.clone()) {
+                eprintln!("회의실 캐시 저장 실패: {error}");
+            }
+            Ok(bookings)
+        }
+        Err(error) => {
+            eprintln!("회의실 일정 조회 실패: {error}");
+            Ok(cache
+                .0
+                .load(Provider::Microsoft, &from, &to)
                 .map(|cached| cached.into_events())
                 .unwrap_or_default())
         }
@@ -437,7 +702,6 @@ async fn open_event_editor(
     app: AppHandle,
     date: String,
     target: Option<EditorTarget>,
-    rooms: Vec<String>,
 ) -> Result<(), String> {
     let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|error| error.to_string())?;
     let mut query = url::form_urlencoded::Serializer::new(String::new());
@@ -481,7 +745,6 @@ async fn open_event_editor(
         .build()
         .map_err(|error| error.to_string())?;
     place_editor_over_widget(&app, &window);
-        rooms: oauth::room_names(),
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     app.emit(EDITOR_OPEN_EVENT, true)
@@ -541,7 +804,13 @@ pub fn run() {
             app.manage(HolidayCache(EventCache::new(
                 app.path().app_local_data_dir()?.join(HOLIDAY_CACHE_FILE),
             )));
+            app.manage(RoomCache(EventCache::new(
+                app.path().app_local_data_dir()?.join(ROOM_CACHE_FILE),
+            )));
 
+            if let Some(window) = app.get_webview_window(MAIN_LABEL) {
+                *app.state::<WidgetState>().layout.lock().unwrap() = DisplayLayout::read(&window);
+            }
             let was_maximized = restore_position(app.handle()).unwrap_or(false);
             if desktop_pin::desktop_ready() {
                 place_initially(app.handle(), was_maximized);
@@ -557,6 +826,11 @@ pub fn run() {
                 });
             }
             restart_if_page_never_starts(app.handle());
+            watch_monitors(app.handle());
+            // 트레이 아이콘이 없어도 위젯은 쓸 수 있으므로 실행을 막지 않습니다.
+            if let Err(error) = build_tray(app.handle()) {
+                eprintln!("트레이 아이콘 생성 실패: {error}");
+            }
 
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyK);
 
@@ -586,35 +860,11 @@ pub fn run() {
             autostart_enabled,
             set_autostart,
             provider_status,
-// 회의실도 부가 정보라 공휴일처럼 저장된 값으로 대신합니다.
-#[tauri::command]
-async fn rooms(
-    cache: State<'_, RoomCache>,
-    from: String,
-    to: String,
-) -> Result<Vec<CalendarEvent>, String> {
-    match oauth::fetch_rooms(&from, &to).await {
-        Ok(bookings) => {
-            if let Err(error) = cache.0.store(Provider::Microsoft, &from, &to, bookings.clone()) {
-                eprintln!("회의실 캐시 저장 실패: {error}");
-            }
-            Ok(bookings)
-        }
-        Err(error) => {
-            eprintln!("회의실 일정 조회 실패: {error}");
-            Ok(cache
-                .0
-                .load(Provider::Microsoft, &from, &to)
-                .map(|cached| cached.into_events())
-                .unwrap_or_default())
-        }
-    }
-}
-
             connect,
             cached_events,
             fetch_events,
             holidays,
+            rooms,
             google_calendars,
             create_google_event,
             google_event,
@@ -653,8 +903,62 @@ mod tests {
         assert_eq!((new.width, new.height), (Some(900), Some(620)));
         assert!(new.maximized);
     }
+
+    fn monitor(name: &str, x: i32, y: i32, width: i32, height: i32) -> MonitorBox {
+        MonitorBox {
+            name: name.to_string(),
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn placement_on(name: &str, x: i32, y: i32, anchor_x: i32, anchor_y: i32) -> Placement {
+        Placement {
+            x,
+            y,
+            width: Some(1049),
+            height: Some(1361),
+            maximized: true,
+            monitor: Some(MonitorAnchor {
+                name: name.to_string(),
+                x: anchor_x,
+                y: anchor_y,
+            }),
+        }
+    }
+
+    #[test]
+    fn home_position_follows_the_monitor_when_the_layout_changes() {
+        let placement = placement_on("DISPLAY2", 3862, 346, 3840, 235);
+        let moved = [monitor("DISPLAY1", 0, 0, 2560, 1440), monitor("DISPLAY2", -1080, 0, 1080, 1920)];
+        assert_eq!(placement.home_position(&moved), Some((-1058, 111)));
+    }
+
+    #[test]
+    fn home_position_is_missing_while_the_monitor_is_unplugged() {
+        let placement = placement_on("DISPLAY2", 3862, 346, 3840, 235);
+        assert_eq!(placement.home_position(&[monitor("DISPLAY1", 0, 0, 2560, 1440)]), None);
+    }
+
+    #[test]
+    fn home_position_stays_on_a_monitor_that_became_smaller() {
+        let placement = placement_on("DISPLAY1", 3000, 2000, 0, 0);
+        let smaller = [monitor("DISPLAY1", 0, 0, 1920, 1080)];
+        assert_eq!(
+            placement.home_position(&smaller),
+            Some((1920 - MIN_VISIBLE_PX, 1080 - MIN_VISIBLE_PX))
+        );
+    }
+
+    #[test]
+    fn fit_rect_keeps_the_window_inside_the_area() {
+        let area = RECT { left: 0, top: 0, right: 1000, bottom: 800 };
+        let fitted = fit_rect(RECT { left: 900, top: -50, right: 2100, bottom: 350 }, area);
+        assert_eq!(
+            (fitted.left, fitted.top, fitted.right, fitted.bottom),
+            (0, 0, 1000, 400)
+        );
+    }
 }
-            app.manage(RoomCache(EventCache::new(
-                app.path().app_local_data_dir()?.join(ROOM_CACHE_FILE),
-            )));
-            rooms,

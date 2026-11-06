@@ -49,9 +49,26 @@ pub fn screen_rect(window: &WebviewWindow) -> Option<RECT> {
     }
 }
 
+/// 바탕화면 창의 화면 기준 위치입니다. 모니터 배치가 바뀌면 함께 달라집니다.
+pub fn desktop_rect() -> Option<(i32, i32, i32, i32)> {
+    let desktop = find_desktop();
+    if desktop.is_null() {
+        return None;
+    }
+    unsafe {
+        let mut rect: RECT = std::mem::zeroed();
+        (GetWindowRect(desktop, &mut rect) != 0)
+            .then_some((rect.left, rect.top, rect.right, rect.bottom))
+    }
+}
+
 /// 위젯이 가장 많이 걸친 모니터에서 작업 표시줄을 뺀 영역을 돌려줍니다.
 pub fn work_area(window: &WebviewWindow) -> Option<RECT> {
-    let rect = screen_rect(window)?;
+    work_area_of(screen_rect(window)?)
+}
+
+/// 주어진 영역이 가장 많이 걸친 모니터에서 작업 표시줄을 뺀 영역을 돌려줍니다.
+pub fn work_area_of(rect: RECT) -> Option<RECT> {
     unsafe {
         let monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
         let mut info: MONITORINFO = std::mem::zeroed();
