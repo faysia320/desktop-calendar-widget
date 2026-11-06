@@ -42,6 +42,7 @@ windows-sys = { version = "0.60", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
+roxmltree = "0.21.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

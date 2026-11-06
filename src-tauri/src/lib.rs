@@ -1,5 +1,6 @@
 mod desktop_pin;
 mod event_cache;
+mod news;
 mod oauth;
 mod single_instance;
 
@@ -18,6 +19,7 @@ use tauri::{
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows_sys::Win32::Foundation::RECT;
 
@@ -31,6 +33,7 @@ const POSITION_FILE: &str = "window-position.json";
 const EVENT_CACHE_FILE: &str = "event-cache.json";
 const HOLIDAY_CACHE_FILE: &str = "holiday-cache.json";
 const ROOM_CACHE_FILE: &str = "room-cache.json";
+const NEWS_CACHE_FILE: &str = "news-cache.json";
 const POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 // 창 왼쪽 위 모서리만 걸친 위치로 복원되어 위젯을 잡을 수 없게 되는 것을 막습니다.
 const MIN_VISIBLE_PX: i32 = 100;
@@ -47,6 +50,8 @@ const TRAY_QUIT_ID: &str = "quit";
 struct HolidayCache(EventCache);
 
 struct RoomCache(EventCache);
+
+struct NewsCache(std::path::PathBuf);
 
 #[derive(Default)]
 struct WidgetState {
@@ -612,6 +617,21 @@ async fn rooms(
 }
 
 #[tauri::command]
+async fn geeknews(cache: State<'_, NewsCache>) -> Result<news::NewsFeed, String> {
+    news::fetch(&cache.0).await
+}
+
+#[tauri::command]
+fn open_article(app: AppHandle, url: String) -> Result<(), String> {
+    if !news::is_article_url(&url) {
+        return Err("GeekNews 글 주소가 아닙니다.".to_string());
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| format!("브라우저를 열 수 없습니다: {error}"))
+}
+
+#[tauri::command]
 async fn google_calendars() -> Result<Vec<GoogleCalendar>, String> {
     oauth::google_calendars().await
 }
@@ -807,6 +827,7 @@ pub fn run() {
             app.manage(RoomCache(EventCache::new(
                 app.path().app_local_data_dir()?.join(ROOM_CACHE_FILE),
             )));
+            app.manage(NewsCache(app.path().app_local_data_dir()?.join(NEWS_CACHE_FILE)));
 
             if let Some(window) = app.get_webview_window(MAIN_LABEL) {
                 *app.state::<WidgetState>().layout.lock().unwrap() = DisplayLayout::read(&window);
@@ -865,6 +886,8 @@ pub fn run() {
             fetch_events,
             holidays,
             rooms,
+            geeknews,
+            open_article,
             google_calendars,
             create_google_event,
             google_event,

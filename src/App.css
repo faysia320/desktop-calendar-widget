@@ -569,6 +569,83 @@ p {
   box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 var(--edge-highlight);
 }
 
+.news {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  padding: 12px 8px 8px;
+  border-radius: 15px;
+  background: var(--translucent-card);
+  box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 var(--edge-highlight);
+}
+
+.news-header {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px;
+}
+
+.news-header h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.news-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.news-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.news-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.news-item:hover {
+  background: var(--hover);
+}
+
+.news-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.news-age {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.news-empty {
+  margin: auto;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
 .details-header {
   display: flex;
   align-items: flex-start;
@@ -763,7 +840,8 @@ p {
   background: var(--accent);
 }
 
-.room-tooltip {
+/* 회의실과 뉴스 항목에 마우스를 올리면 띄우는 카드입니다. */
+.hover-card {
   position: fixed;
   z-index: 30;
   display: flex;
@@ -774,7 +852,7 @@ p {
   overflow: hidden;
   border-radius: 12px;
   background:
-    linear-gradient(to right, var(--room-color) 3px, transparent 3px),
+    linear-gradient(to right, var(--hover-card-color) 3px, transparent 3px),
     var(--popover);
   box-shadow: var(--popover-shadow), inset 0 0 0 1px var(--edge);
   backdrop-filter: blur(28px) saturate(170%);
@@ -785,25 +863,25 @@ p {
   transform-origin: bottom left;
 }
 
-.room-tooltip-title {
+.hover-card-title {
   overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 700;
 }
 
-.room-tooltip-meta {
+.hover-card-meta {
   color: var(--muted-solid);
   font-size: 11.5px;
 }
 
-.room-tooltip-summary,
-.room-tooltip-note {
+.hover-card-summary,
+.hover-card-note {
   margin: 5px 0 0;
   font-size: 12px;
   line-height: 1.45;
 }
 
-.room-tooltip-summary {
+.hover-card-summary {
   display: -webkit-box;
   overflow: hidden;
   white-space: pre-line;
@@ -811,7 +889,11 @@ p {
   -webkit-line-clamp: 4;
 }
 
-.room-tooltip-note {
+.hover-card-summary.long {
+  -webkit-line-clamp: 9;
+}
+
+.hover-card-note {
   color: var(--muted-solid);
 }
 
@@ -1015,6 +1097,17 @@ p {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 3fr) minmax(220px, 2fr);
     gap: 8px;
+  }
+}
+
+/* 세로로 긴 화면에서만 뉴스까지 세 칸으로 나눕니다. 작은 창에는 달력과 일정만 둡니다. */
+@media (max-aspect-ratio: 1/1) and (min-height: 900px) {
+  .layout {
+    grid-template-rows: minmax(0, 6fr) minmax(0, 5fr) minmax(0, 5fr);
+  }
+
+  .news {
+    display: flex;
   }
 }
 

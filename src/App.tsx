@@ -1,6 +1,7 @@
 import {
   CSSProperties,
   MouseEvent,
+  ReactNode,
   WheelEvent,
   useCallback,
   useEffect,
@@ -19,6 +20,7 @@ import interactionPlugin from "@fullcalendar/interaction";
 import koLocale from "@fullcalendar/core/locales/ko";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import EventEditor from "./EventEditor";
+import { Article, NewsFeed, formatArticleAge, htmlToText } from "./news";
 import {
   CalendarEvent,
   PROVIDER_LABELS,
@@ -42,6 +44,7 @@ import { Icon } from "./icons";
 import "./App.css";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const NEWS_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const NOW_TICK_MS = 30 * 1000;
 const WHEEL_THROTTLE_MS = 350;
 const TRANSPARENCY_STORAGE_KEY = "background-transparency";
@@ -408,42 +411,52 @@ function EventRow({ event, now, onEdit }: { event: CalendarEvent; now: string; o
   );
 }
 
-const ROOM_TOOLTIP_GAP = 6;
-const ROOM_TOOLTIP_MARGIN = 8;
+const HOVER_CARD_GAP = 6;
+const HOVER_CARD_MARGIN = 8;
 const ROOM_TOOLTIP_MAX_ATTENDEES = 12;
 
-// 시간표는 넘치는 부분을 잘라 내므로 패널 밖으로 띄워 블록 위에 표시합니다. 위에 자리가 없으면 아래에 둡니다.
-function RoomTooltip({ booking, anchor, color }: { booking: RemoteEvent; anchor: DOMRect; color: string }) {
+// 패널은 넘치는 부분을 잘라 내므로 그 밖으로 띄워 항목 위에 표시합니다. 위에 자리가 없으면 아래에 둡니다.
+function HoverCard({ anchor, color, children }: { anchor: DOMRect; color: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
-  const meeting = booking.meeting;
-  const organizer = booking.title.trim();
-  const hiddenAttendees = (meeting?.attendees.length ?? 0) - ROOM_TOOLTIP_MAX_ATTENDEES;
 
   useLayoutEffect(() => {
     const { offsetWidth, offsetHeight } = ref.current!;
-    const above = anchor.top - offsetHeight - ROOM_TOOLTIP_GAP;
+    const above = anchor.top - offsetHeight - HOVER_CARD_GAP;
     setPosition({
-      left: Math.max(ROOM_TOOLTIP_MARGIN, Math.min(anchor.left, window.innerWidth - offsetWidth - ROOM_TOOLTIP_MARGIN)),
-      top: above >= ROOM_TOOLTIP_MARGIN ? above : anchor.bottom + ROOM_TOOLTIP_GAP,
+      left: Math.max(HOVER_CARD_MARGIN, Math.min(anchor.left, window.innerWidth - offsetWidth - HOVER_CARD_MARGIN)),
+      top: above >= HOVER_CARD_MARGIN ? above : anchor.bottom + HOVER_CARD_GAP,
     });
   }, [anchor]);
 
   return createPortal(
     <div
-      className="room-tooltip"
+      className="hover-card"
       ref={ref}
       role="tooltip"
-      style={{ ...position, visibility: position ? "visible" : "hidden", "--room-color": color } as CSSProperties}
+      style={{ ...position, visibility: position ? "visible" : "hidden", "--hover-card-color": color } as CSSProperties}
     >
-      <strong className="room-tooltip-title">{meeting?.subject ?? organizer}</strong>
-      <span className="room-tooltip-meta">
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+function RoomTooltip({ booking, anchor, color }: { booking: RemoteEvent; anchor: DOMRect; color: string }) {
+  const meeting = booking.meeting;
+  const organizer = booking.title.trim();
+  const hiddenAttendees = (meeting?.attendees.length ?? 0) - ROOM_TOOLTIP_MAX_ATTENDEES;
+
+  return (
+    <HoverCard anchor={anchor} color={color}>
+      <strong className="hover-card-title">{meeting?.subject ?? organizer}</strong>
+      <span className="hover-card-meta">
         {booking.calendar_id} · {formatEventTime(booking)}
       </span>
       {meeting ? (
         <>
-          <span className="room-tooltip-meta">예약자 {organizer}</span>
-          {meeting.summary && <p className="room-tooltip-summary">{meeting.summary}</p>}
+          <span className="hover-card-meta">예약자 {organizer}</span>
+          {meeting.summary && <p className="hover-card-summary">{meeting.summary}</p>}
           {meeting.attendees.length > 0 && (
             <div className="room-tooltip-attendees">
               <h4>참여자 {meeting.attendees.length}명</h4>
@@ -457,10 +470,9 @@ function RoomTooltip({ booking, anchor, color }: { booking: RemoteEvent; anchor:
           )}
         </>
       ) : (
-        <p className="room-tooltip-note">내가 참석하지 않는 회의는 내용과 참여자를 볼 수 없습니다.</p>
+        <p className="hover-card-note">내가 참석하지 않는 회의는 내용과 참여자를 볼 수 없습니다.</p>
       )}
-    </div>,
-    document.body,
+    </HoverCard>
   );
 }
 
@@ -545,6 +557,62 @@ function RoomSchedules({
         )}
       </div>
       {hovered && <RoomTooltip key={hovered.booking.id} {...hovered} />}
+    </section>
+  );
+}
+
+function NewsPanel({ now }: { now: Date }) {
+  const [feed, setFeed] = useState<NewsFeed | null>(null);
+  const [error, setError] = useState("");
+  const [hovered, setHovered] = useState<{ article: Article; anchor: DOMRect } | null>(null);
+
+  useEffect(() => {
+    const load = () =>
+      invoke<NewsFeed>("geeknews").then(
+        (next) => {
+          setFeed(next);
+          setError("");
+        },
+        (reason) => setError(String(reason)),
+      );
+    load();
+    const timer = window.setInterval(load, NEWS_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <section className="news" aria-label="GeekNews">
+      <header className="news-header">
+        <h2>GeekNews</h2>
+        {feed?.stale && <span className="news-status">{formatFetchedAt(feed.fetched_at)}에 받은 글</span>}
+      </header>
+      {feed ? (
+        <ul className="news-list" onScroll={() => setHovered(null)}>
+          {feed.articles.map((article) => (
+            <li key={article.id}>
+              <button
+                className="news-item"
+                onClick={() => invoke("open_article", { url: article.url }).catch((reason) => setError(String(reason)))}
+                onMouseEnter={(event) => setHovered({ article, anchor: event.currentTarget.getBoundingClientRect() })}
+                onMouseLeave={() => setHovered(null)}
+              >
+                <span className="news-title">{htmlToText(article.title)}</span>
+                <span className="news-age">{formatArticleAge(article.published, now)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="news-empty">{error ? "글을 불러오지 못했습니다." : "불러오는 중입니다."}</p>
+      )}
+      {feed && error && <p className="error news-status">{error}</p>}
+      {hovered && (
+        <HoverCard key={hovered.article.id} anchor={hovered.anchor} color="var(--accent)">
+          <strong className="hover-card-title">{htmlToText(hovered.article.title)}</strong>
+          <span className="hover-card-meta">{formatArticleAge(hovered.article.published, now)}</span>
+          <p className="hover-card-summary long">{htmlToText(hovered.article.content_html)}</p>
+        </HoverCard>
+      )}
     </section>
   );
 }
@@ -882,6 +950,7 @@ function Widget() {
               onConnect={connect}
             />
           </aside>
+          <NewsPanel now={now} />
         </div>
         {editorOpen && <div className="modal-backdrop" onMouseDown={() => invoke("focus_event_editor")} />}
       </div>

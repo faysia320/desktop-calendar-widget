@@ -144,14 +144,14 @@ struct TokenResponse {
     refresh_token: Option<String>,
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
+pub(crate) fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())
 }
 
-fn request_error(action: &str, error: reqwest::Error) -> String {
+pub(crate) fn request_error(action: &str, error: reqwest::Error) -> String {
     if error.is_connect() || error.is_timeout() {
         return "네트워크에 연결할 수 없습니다.".to_string();
     }
