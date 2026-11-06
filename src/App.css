@@ -1172,3 +1172,8 @@ p {
     transition: none !important;
   }
 }
+/* 포커스 표시가 그룹의 둥근 모서리에 잘리지 않도록 같은 곡률로 그립니다. */
+.editor-group > input:focus-visible {
+  border-radius: 12px;
+}
+
