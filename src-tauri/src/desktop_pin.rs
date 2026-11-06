@@ -7,9 +7,10 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowRect, HWND_TOP, HWND_TOPMOST,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetParent, SetWindowLongPtrW,
-    SetWindowPos, WS_CAPTION, WS_CHILD, WS_POPUP,
+    FindWindowW, GWL_EXSTYLE, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowRect, HWND_TOP,
+    HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos, WS_CAPTION, WS_CHILD,
+    WS_EX_LAYERED, WS_POPUP,
 };
 
 fn window_handle(window: &WebviewWindow) -> Result<HWND, String> {
@@ -124,6 +125,10 @@ pub fn pin_to_desktop(window: &WebviewWindow) -> Result<(), String> {
             SetWindowLongPtrW(hwnd, GWL_STYLE, style as isize);
             return Err("바탕화면에 위젯을 넣을 수 없습니다.".to_string());
         }
+        // 일반 자식 창은 투명한 부분이 배경화면과 합성되지 않아 어둡게 칠해지므로 계층 창으로 만듭니다.
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style | WS_EX_LAYERED) as isize);
+        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         SetWindowPos(
             hwnd,
             HWND_TOP,
@@ -152,6 +157,8 @@ pub fn float_on_top(window: &WebviewWindow) -> Result<(), String> {
             GWL_STYLE,
             ((style & !WS_CHILD) | WS_POPUP | WS_CAPTION) as isize,
         );
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style & !WS_EX_LAYERED) as isize);
         SetWindowPos(
             hwnd,
             HWND_TOPMOST,
