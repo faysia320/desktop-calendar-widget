@@ -181,6 +181,7 @@ mod tests {
 
     fn event(title: &str) -> CalendarEvent {
         CalendarEvent {
+            meeting: None,
             id: "1".to_string(),
             title: title.to_string(),
             start: "2026-11-05 09:00".to_string(),

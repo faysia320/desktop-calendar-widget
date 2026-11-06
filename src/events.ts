@@ -11,6 +11,14 @@ export type RemoteEvent = {
   color: string | null;
   text_color: string | null;
   editable: boolean;
+  meeting?: MeetingDetails;
+};
+
+// 내가 참석하는 회의실 예약에만 있습니다.
+export type MeetingDetails = {
+  subject: string;
+  summary: string | null;
+  attendees: string[];
 };
 
 export type CalendarEvent = RemoteEvent & { provider: Provider };

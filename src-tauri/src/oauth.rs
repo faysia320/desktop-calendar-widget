@@ -106,6 +106,9 @@ pub struct ProviderStatus {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CalendarEvent {
+    // 내가 참석하는 회의실 예약에만 있습니다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) meeting: Option<MeetingDetails>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) start: String,
@@ -605,6 +608,7 @@ struct GoogleEvent {
 impl From<GoogleEvent> for CalendarEvent {
     fn from(event: GoogleEvent) -> Self {
         CalendarEvent {
+            meeting: None,
             id: event.id,
             title: event.summary.unwrap_or_else(|| "(제목 없음)".to_string()),
             all_day: event.start.date.is_some(),
@@ -886,6 +890,7 @@ async fn fetch_microsoft(
     let mut events = Vec::new();
     loop {
         events.extend(page.value.into_iter().map(|event| CalendarEvent {
+            meeting: None,
             id: event.id,
             title: event.subject.unwrap_or_else(|| "(제목 없음)".to_string()),
             start: event.start.display(event.is_all_day),
@@ -971,6 +976,7 @@ fn room_bookings(addresses: &[String], schedules: GraphSchedules) -> Result<Vec<
                 .map(|item| {
                     let start = item.start.display(false);
                     CalendarEvent {
+                        meeting: None,
                         id: format!("{name}|{start}"),
                         title: item
                             .subject
@@ -991,7 +997,115 @@ fn room_bookings(addresses: &[String], schedules: GraphSchedules) -> Result<Vec<
     Ok(bookings)
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MeetingDetails {
+    subject: String,
+    summary: Option<String>,
+    attendees: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct GraphMeetings {
+    #[serde(default)]
+    value: Vec<GraphMeeting>,
+    #[serde(rename = "@odata.nextLink")]
+    next_link: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphMeeting {
+    subject: Option<String>,
+    body_preview: Option<String>,
+    #[serde(default)]
+    is_cancelled: bool,
+    #[serde(default)]
+    attendees: Vec<GraphAttendee>,
+    start: GraphTime,
+    end: GraphTime,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphAttendee {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    email_address: GraphEmailAddress,
+}
+
+#[derive(Deserialize)]
+struct GraphEmailAddress {
+    name: Option<String>,
+    address: Option<String>,
+}
+
+// Teams 회의는 본문 뒤에 밑줄로 구분한 참가 안내가 붙습니다.
+fn meeting_summary(preview: Option<String>) -> Option<String> {
+    let preview = preview?;
+    let summary = preview.split("____").next().unwrap_or_default().trim();
+    (!summary.is_empty()).then(|| summary.to_string())
+}
+
+/// 회의실을 참석자로 잡은 내 회의를 시간이 같은 회의실 예약에 붙입니다.
+fn attach_meetings(bookings: &mut [CalendarEvent], addresses: &[String], meetings: Vec<GraphMeeting>) {
+    for meeting in meetings.into_iter().filter(|meeting| !meeting.is_cancelled) {
+        let (start, end) = (meeting.start.display(false), meeting.end.display(false));
+        let room_of = |attendee: &GraphAttendee| {
+            let address = attendee.email_address.address.as_deref()?;
+            addresses.iter().position(|room| room.eq_ignore_ascii_case(address))
+        };
+        let rooms: Vec<String> = meeting.attendees.iter().filter_map(room_of).map(room_name).collect();
+        let details = MeetingDetails {
+            subject: meeting.subject.clone().unwrap_or_else(|| "(제목 없음)".to_string()),
+            summary: meeting_summary(meeting.body_preview.clone()),
+            attendees: meeting
+                .attendees
+                .iter()
+                .filter(|attendee| attendee.kind.as_deref() != Some("resource") && room_of(attendee).is_none())
+                .filter_map(|attendee| {
+                    let email = &attendee.email_address;
+                    email.name.clone().or_else(|| email.address.clone())
+                })
+                .collect(),
+        };
+        for booking in bookings.iter_mut().filter(|booking| {
+            booking.start == start
+                && booking.end == end
+                && booking.calendar_id.as_ref().is_some_and(|name| rooms.contains(name))
+        }) {
+            booking.meeting = Some(details.clone());
+        }
+    }
+}
+
+async fn fetch_my_meetings(
+    access_token: &str,
+    start: DateTime<Local>,
+    end: DateTime<Local>,
+) -> Result<Vec<GraphMeeting>, String> {
+    let mut page: GraphMeetings = get_json(
+        "https://graph.microsoft.com/v1.0/me/calendarView",
+        access_token,
+        &[
+            ("startDateTime", start.to_rfc3339()),
+            ("endDateTime", end.to_rfc3339()),
+            ("$top", GRAPH_PAGE_SIZE.to_string()),
+            ("$select", "subject,bodyPreview,isCancelled,attendees,start,end".to_string()),
+        ],
+    )
+    .await?;
+    let mut meetings = Vec::new();
+    loop {
+        meetings.append(&mut page.value);
+        let Some(next_link) = page.next_link else {
+            return Ok(meetings);
+        };
+        page = get_json(&next_link, access_token, &[]).await?;
+    }
+}
+
 /// `from`부터 `to` 전날까지의 회의실 예약을 가져옵니다. 일정 제목은 회의실 공개 범위를 따릅니다.
+/// 다른 사람의 회의 내용은 읽을 수 없어 내가 참석하는 회의에만 내용과 참석자를 붙입니다.
 pub async fn fetch_rooms(from: &str, to: &str) -> Result<Vec<CalendarEvent>, String> {
     let addresses = room_addresses();
     if addresses.is_empty() {
@@ -1027,7 +1141,13 @@ pub async fn fetch_rooms(from: &str, to: &str) -> Result<Vec<CalendarEvent>, Str
         .json()
         .await
         .map_err(|error| format!("회의실 일정 응답 해석 실패: {error}"))?;
-    room_bookings(&addresses, schedules)
+    let mut bookings = room_bookings(&addresses, schedules)?;
+    // 회의 내용은 부가 정보라 읽지 못해도 예약 현황은 보여 줍니다.
+    match fetch_my_meetings(&access_token, start, end).await {
+        Ok(meetings) => attach_meetings(&mut bookings, &addresses, meetings),
+        Err(error) => eprintln!("회의 내용 조회 실패: {error}"),
+    }
+    Ok(bookings)
 }
 
 #[cfg(test)]
@@ -1308,6 +1428,73 @@ mod tests {
     }
 
     // 실제 Credential Manager를 사용하므로 직접 지정할 때만 실행합니다.
+    fn booking_at(room: &str, start: &str, end: &str) -> CalendarEvent {
+        CalendarEvent {
+            meeting: None,
+            id: format!("{room}|{start}"),
+            title: "예약자".to_string(),
+            start: start.to_string(),
+            end: end.to_string(),
+            all_day: false,
+            location: None,
+            calendar_id: Some(room.to_string()),
+            color: None,
+            text_color: None,
+            editable: false,
+        }
+    }
+
+    #[test]
+    fn my_meeting_is_attached_to_the_booking_of_the_same_room_and_time() {
+        let addresses = vec!["room1@example.com".to_string(), "room2@example.com".to_string()];
+        let meetings: GraphMeetings = serde_json::from_value(serde_json::json!({
+            "value": [
+                {
+                    "subject": "주간 회의",
+                    "bodyPreview": "안건입니다.\r\n________\r\nMicrosoft Teams 참가",
+                    "attendees": [
+                        {"type": "resource", "emailAddress": {"name": "CFRoom2", "address": "ROOM2@example.com"}},
+                        {"type": "required", "emailAddress": {"name": "참석자", "address": "a@example.com"}},
+                        {"type": "optional", "emailAddress": {"address": "b@example.com"}}
+                    ],
+                    "start": {"dateTime": "2026-11-05T01:00:00.0000000"},
+                    "end": {"dateTime": "2026-11-05T02:00:00.0000000"}
+                },
+                {
+                    "subject": "취소된 회의",
+                    "isCancelled": true,
+                    "attendees": [{"type": "resource", "emailAddress": {"address": "room1@example.com"}}],
+                    "start": {"dateTime": "2026-11-05T01:00:00.0000000"},
+                    "end": {"dateTime": "2026-11-05T02:00:00.0000000"}
+                }
+            ]
+        }))
+        .unwrap();
+        let time = |hour: u32| {
+            GraphTime { date_time: format!("2026-11-05T{hour:02}:00:00.0000000") }.display(false)
+        };
+        let mut bookings = vec![
+            booking_at("회의실 1", &time(1), &time(2)),
+            booking_at("회의실 2", &time(1), &time(2)),
+            booking_at("회의실 2", &time(3), &time(4)),
+        ];
+
+        attach_meetings(&mut bookings, &addresses, meetings.value);
+
+        assert!(bookings[0].meeting.is_none());
+        assert!(bookings[2].meeting.is_none());
+        let details = bookings[1].meeting.as_ref().unwrap();
+        assert_eq!(details.subject, "주간 회의");
+        assert_eq!(details.summary.as_deref(), Some("안건입니다."));
+        assert_eq!(details.attendees, ["참석자", "b@example.com"]);
+    }
+
+    #[test]
+    fn meeting_summary_is_empty_when_only_the_join_notice_remains() {
+        assert_eq!(meeting_summary(Some("  \r\n____\r\nTeams".to_string())), None);
+        assert_eq!(meeting_summary(None), None);
+    }
+
     #[test]
     #[ignore]
     fn keyring_size_limit() {

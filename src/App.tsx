@@ -1,4 +1,15 @@
-import { CSSProperties, MouseEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CSSProperties,
+  MouseEvent,
+  WheelEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -397,6 +408,62 @@ function EventRow({ event, now, onEdit }: { event: CalendarEvent; now: string; o
   );
 }
 
+const ROOM_TOOLTIP_GAP = 6;
+const ROOM_TOOLTIP_MARGIN = 8;
+const ROOM_TOOLTIP_MAX_ATTENDEES = 12;
+
+// 시간표는 넘치는 부분을 잘라 내므로 패널 밖으로 띄워 블록 위에 표시합니다. 위에 자리가 없으면 아래에 둡니다.
+function RoomTooltip({ booking, anchor, color }: { booking: RemoteEvent; anchor: DOMRect; color: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const meeting = booking.meeting;
+  const organizer = booking.title.trim();
+  const hiddenAttendees = (meeting?.attendees.length ?? 0) - ROOM_TOOLTIP_MAX_ATTENDEES;
+
+  useLayoutEffect(() => {
+    const { offsetWidth, offsetHeight } = ref.current!;
+    const above = anchor.top - offsetHeight - ROOM_TOOLTIP_GAP;
+    setPosition({
+      left: Math.max(ROOM_TOOLTIP_MARGIN, Math.min(anchor.left, window.innerWidth - offsetWidth - ROOM_TOOLTIP_MARGIN)),
+      top: above >= ROOM_TOOLTIP_MARGIN ? above : anchor.bottom + ROOM_TOOLTIP_GAP,
+    });
+  }, [anchor]);
+
+  return createPortal(
+    <div
+      className="room-tooltip"
+      ref={ref}
+      role="tooltip"
+      style={{ ...position, visibility: position ? "visible" : "hidden", "--room-color": color } as CSSProperties}
+    >
+      <strong className="room-tooltip-title">{meeting?.subject ?? organizer}</strong>
+      <span className="room-tooltip-meta">
+        {booking.calendar_id} · {formatEventTime(booking)}
+      </span>
+      {meeting ? (
+        <>
+          <span className="room-tooltip-meta">예약자 {organizer}</span>
+          {meeting.summary && <p className="room-tooltip-summary">{meeting.summary}</p>}
+          {meeting.attendees.length > 0 && (
+            <div className="room-tooltip-attendees">
+              <h4>참여자 {meeting.attendees.length}명</h4>
+              <ul>
+                {meeting.attendees.slice(0, ROOM_TOOLTIP_MAX_ATTENDEES).map((attendee, index) => (
+                  <li key={`${attendee}-${index}`}>{attendee}</li>
+                ))}
+                {hiddenAttendees > 0 && <li className="more">외 {hiddenAttendees}명</li>}
+              </ul>
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="room-tooltip-note">내가 참석하지 않는 회의는 내용과 참여자를 볼 수 없습니다.</p>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
 // 내 일정과 섞이지 않도록 고른 날의 회의실 예약을 상세 패널 아래에 가로 시간표로 보여 줍니다.
 function RoomSchedules({
   names,
@@ -409,6 +476,7 @@ function RoomSchedules({
   day: string;
   now: string;
 }) {
+  const [hovered, setHovered] = useState<{ booking: RemoteEvent; anchor: DOMRect; color: string } | null>(null);
   const dayBookings = bookings.filter((booking) => occursOn(booking, day));
   const { from, to } = roomHourRange(dayBookings, day);
   const colorSlots = roomColorSlots(dayBookings);
@@ -446,14 +514,18 @@ function RoomSchedules({
                 .filter((booking) => booking.calendar_id === name)
                 .map((booking) => {
                   const { start, end } = minutesOnDay(booking, day);
+                  const color = `var(--room-color-${colorSlots.get(booking.title.trim())})`;
                   return (
                     <li
                       className={`room-booking event-${eventPhase(booking, now)}`}
                       key={booking.id}
-                      title={`${formatEventTime(booking)} ${booking.title}`}
+                      onMouseEnter={(event) =>
+                        setHovered({ booking, anchor: event.currentTarget.getBoundingClientRect(), color })
+                      }
+                      onMouseLeave={() => setHovered(null)}
                       style={
                         {
-                          "--room-color": `var(--room-color-${colorSlots.get(booking.title.trim())})`,
+                          "--room-color": color,
                           left: `${percent(start - from * 60)}%`,
                           width: `${percent(end - start)}%`,
                         } as CSSProperties
@@ -472,6 +544,7 @@ function RoomSchedules({
           </div>
         )}
       </div>
+      {hovered && <RoomTooltip key={hovered.booking.id} {...hovered} />}
     </section>
   );
 }

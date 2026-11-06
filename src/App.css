@@ -763,6 +763,92 @@ p {
   background: var(--accent);
 }
 
+.room-tooltip {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(300px, calc(100vw - 16px));
+  padding: 10px 12px 11px 15px;
+  overflow: hidden;
+  border-radius: 12px;
+  background:
+    linear-gradient(to right, var(--room-color) 3px, transparent 3px),
+    var(--popover);
+  box-shadow: var(--popover-shadow), inset 0 0 0 1px var(--edge);
+  backdrop-filter: blur(28px) saturate(170%);
+  color: var(--text);
+  text-shadow: none;
+  pointer-events: none;
+  animation: pop-in 120ms ease-out;
+  transform-origin: bottom left;
+}
+
+.room-tooltip-title {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.room-tooltip-meta {
+  color: var(--muted-solid);
+  font-size: 11.5px;
+}
+
+.room-tooltip-summary,
+.room-tooltip-note {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.room-tooltip-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.room-tooltip-note {
+  color: var(--muted-solid);
+}
+
+.room-tooltip-attendees {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--hairline);
+}
+
+.room-tooltip-attendees h4 {
+  margin: 0 0 5px;
+  color: var(--muted-solid);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.room-tooltip-attendees ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.room-tooltip-attendees li {
+  padding: 2px 7px;
+  border-radius: 9px;
+  background: var(--hover);
+  font-size: 11.5px;
+}
+
+.room-tooltip-attendees li.more {
+  background: none;
+  color: var(--muted-solid);
+}
+
 /* 좁은 패널에서는 제목이 들어가지 않으므로 블록과 짝수 시각만 보여 줍니다. 전체 내용은 툴팁으로 봅니다. */
 @container (max-width: 400px) {
   .room-hour.odd,
