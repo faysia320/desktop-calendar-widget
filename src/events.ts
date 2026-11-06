@@ -111,19 +111,6 @@ export function eventPhase(event: RemoteEvent, now: string): EventPhase {
   return !event.all_day && event.start <= now ? "ongoing" : "upcoming";
 }
 
-// 고른 날에 일정이 없을 때 안내할, 그 뒤의 가장 가까운 일정입니다.
-export function nextEventAfter<T extends RemoteEvent>(events: T[], day: string): T | null {
-  return events
-    .filter((event) => event.start.slice(0, 10) > day)
-    .reduce<T | null>((next, event) => (!next || event.start < next.start ? event : next), null);
-}
-
-export function formatDayLabel(day: string): string {
-  const date = parseDay(day);
-  const weekday = date.toLocaleDateString("ko-KR", { weekday: "short" });
-  return `${date.getMonth() + 1}월 ${date.getDate()}일 (${weekday})`;
-}
-
 // 오늘은 다음 정시, 다른 날은 오전 9시를 새 일정의 시작으로 제안합니다.
 export function suggestedStartTime(day: string, now: Date): string {
   if (day !== toDayKey(now) || now.getHours() >= 23) return "09:00";

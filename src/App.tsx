@@ -16,11 +16,9 @@ import {
   compareEvents,
   describeDay,
   eventPhase,
-  formatDayLabel,
   formatEventTime,
   formatFetchedAt,
   holidayName,
-  nextEventAfter,
   occursOn,
   toDayKey,
   toMinuteKey,
@@ -535,11 +533,6 @@ function Widget() {
     [events, selectedDay],
   );
 
-  const nextEvent = useMemo(
-    () => (dayEvents.length === 0 ? nextEventAfter(events, selectedDay) : null),
-    [events, dayEvents, selectedDay],
-  );
-
   const selectedHoliday = holidayName(holidays, selectedDay);
   const selected = describeDay(selectedDay, today);
   const minuteNow = toMinuteKey(now);
@@ -697,16 +690,6 @@ function Widget() {
               <div className="empty">
                 <p>일정이 없습니다</p>
                 {googleConnected && <p className="muted">날짜를 두 번 누르면 일정을 추가할 수 있습니다.</p>}
-                {nextEvent && (
-                  <button
-                    className="next-event"
-                    style={eventColorStyle(nextEvent)}
-                    onClick={() => goToDay(nextEvent.start.slice(0, 10))}
-                  >
-                    <span className="next-event-label">다음 일정 · {formatDayLabel(nextEvent.start.slice(0, 10))}</span>
-                    <span className="next-event-title">{nextEvent.title}</span>
-                  </button>
-                )}
               </div>
             ) : (
               <ul className="events">
