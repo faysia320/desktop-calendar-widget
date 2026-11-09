@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:app": "pwsh -NoProfile -File scripts/build-app.ps1",
+    "test:teams": "node --test scripts/test-teams-data.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -273,8 +273,9 @@ p {
 .layout {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 248px;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(280px, 2fr) minmax(0, 3fr);
+  gap: 8px;
   height: 100%;
   padding: 10px;
 }
@@ -287,6 +288,9 @@ p {
   min-height: 0;
   padding: 6px 10px 4px 8px;
 }
+
+.calendar-rooms { flex: none; margin-top: 8px; }
+.calendar > .notices { max-height: 110px; overflow-y: auto; }
 
 .toolbar {
   display: flex;
@@ -348,6 +352,29 @@ p {
 .month {
   flex: 1;
   min-height: 0;
+  container-type: size;
+}
+
+/* 숨겨 둔 일정의 측정용 요소가 스크롤 영역을 늘려도 월 보기에는 스크롤을 만들지 않습니다. */
+.month .fc-scroller { overflow: hidden !important; }
+
+/* 짧은 달력에서는 더 보기 링크를 날짜 옆에 놓아 6주도 한 화면에 맞춥니다. */
+@container (max-height: 300px) {
+  .month .fc .fc-daygrid-day-number { padding: 2px 3px 0; }
+  .fc .day-number { min-width: 20px; height: 20px; }
+  .fc .fc-daygrid-day-bottom { position: absolute; top: -20px; right: 3px; margin: 0 !important; }
+  .fc .fc-daygrid-more-link { position: relative; z-index: 1; padding: 0 2px; font-size: 10px; }
+  .fc .more-suffix { display: none; }
+  .fc .holiday-name { display: none; }
+}
+
+/* 상하 배치의 작은 창에서도 여섯 주의 날짜를 모두 표시합니다. */
+@container (max-height: 180px) {
+  .month .fc .fc-daygrid-day-number { padding: 0 3px; }
+  .month .fc .day-number { min-width: 16px; height: 16px; font-size: 11px; line-height: 16px; }
+  .month .fc .fc-col-header-cell { padding-bottom: 1px; }
+  .month .fc .fc-col-header-cell-cushion { padding: 0 5px; font-size: 10.5px; line-height: 14px; }
+  .month .fc .fc-daygrid-day-bottom { top: -16px; }
 }
 
 /* 설정 메뉴 */
@@ -556,28 +583,16 @@ p {
   transform: translateX(14px);
 }
 
-/* 상세 패널 */
-
-.details {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  padding: 16px 12px 12px;
-  border-radius: 15px;
-  background: var(--translucent-card);
-  box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 var(--edge-highlight);
-}
+/* 뉴스와 회의실 */
 
 .news {
-  display: none;
+  display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 6px;
   min-height: 0;
-  padding: 12px 8px 8px;
-  border-radius: 15px;
-  background: var(--translucent-card);
-  box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 var(--edge-highlight);
+  min-width: 0;
+  padding: 8px 12px 12px;
 }
 
 .news-header {
@@ -587,11 +602,6 @@ p {
   justify-content: space-between;
   gap: 8px;
   padding: 0 6px;
-}
-
-.news-header h2 {
-  font-size: 15px;
-  font-weight: 700;
 }
 
 .news-status {
@@ -613,7 +623,7 @@ p {
   align-items: baseline;
   gap: 10px;
   width: 100%;
-  padding: 6px;
+  padding: 10px 6px;
   border-radius: 8px;
   background: none;
   color: var(--text);
@@ -630,8 +640,9 @@ p {
   overflow: hidden;
   font-size: 13px;
   font-weight: 500;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 .news-age {
@@ -644,95 +655,6 @@ p {
   margin: auto;
   color: var(--muted);
   font-size: 12.5px;
-}
-
-.details-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 4px;
-}
-
-.details-heading {
-  min-width: 0;
-}
-
-.details-eyebrow {
-  margin-bottom: 2px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.details-eyebrow.today {
-  color: var(--accent);
-}
-
-.details-heading h2 {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-}
-
-.details-holiday {
-  margin-top: 2px;
-  color: var(--sunday);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.add-button {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border-radius: 50%;
-  background: var(--accent-fill);
-  color: #ffffff;
-  text-shadow: none;
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-fill) 45%, transparent);
-}
-
-.add-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-fill) 88%, #000000);
-}
-
-.add-button:disabled {
-  background: var(--faint);
-  box-shadow: none;
-}
-
-.empty {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 4px;
-  min-height: 0;
-  padding: 8px;
-  overflow-y: auto;
-  text-align: center;
-}
-
-.empty > p:first-child {
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.events {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
 }
 
 .rooms {
@@ -848,6 +770,7 @@ p {
   flex-direction: column;
   gap: 3px;
   width: min(300px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
   padding: 10px 12px 11px 15px;
   overflow: hidden;
   border-radius: 12px;
@@ -952,94 +875,6 @@ p {
   background: var(--hairline);
 }
 
-.event-row {
-  display: flex;
-  align-items: stretch;
-  gap: 9px;
-  width: 100%;
-  padding: 8px 6px 8px 8px;
-  border-radius: 10px;
-  text-align: left;
-}
-
-.event-row.editable:hover {
-  background: var(--hover);
-}
-
-.event-bar {
-  flex: none;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--event-color);
-}
-
-.event-body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.event-title {
-  font-size: 13.5px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.event-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.event-location {
-  flex-wrap: nowrap;
-  gap: 3px;
-}
-
-.event-location span {
-  min-width: 0;
-}
-
-.event-live {
-  padding: 0 6px;
-  border-radius: 6px;
-  background: var(--accent-fill);
-  color: #ffffff;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1.6;
-  text-shadow: none;
-}
-
-.event-chevron {
-  flex: none;
-  align-self: center;
-  color: var(--faint);
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.event-row.editable:hover .event-chevron,
-.event-row.editable:focus-visible .event-chevron {
-  opacity: 1;
-}
-
-.event-past .event-title {
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.event-past .event-bar {
-  opacity: 0.45;
-}
-
 .notices {
   display: flex;
   flex: none;
@@ -1091,24 +926,9 @@ p {
   background: rgb(0 0 0 / 35%);
 }
 
-/* 창이 좁거나 세로로 길면 상세 일정을 달력 아래에 둡니다. */
-@media (max-width: 720px), (max-aspect-ratio: 1/1) {
-  .layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 3fr) minmax(220px, 2fr);
-    gap: 8px;
-  }
-}
-
-/* 세로로 긴 화면에서만 뉴스까지 세 칸으로 나눕니다. 작은 창에는 달력과 일정만 둡니다. */
-@media (max-aspect-ratio: 1/1) and (min-height: 900px) {
-  .layout {
-    grid-template-rows: minmax(0, 6fr) minmax(0, 5fr) minmax(0, 5fr);
-  }
-
-  .news {
-    display: flex;
-  }
+/* 하단은 모든 창 비율에서 채널 영역으로 통합합니다. */
+@media (max-height: 520px) {
+  .layout { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
 }
 
 /* 달력 */
@@ -1310,6 +1130,27 @@ p {
 .fc .fc-daygrid-more-link:hover {
   background: var(--hover);
   color: var(--text);
+}
+
+.fc .fc-popover {
+  z-index: 25;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--popover);
+  backdrop-filter: blur(28px);
+  box-shadow: var(--popover-shadow);
+  color: var(--text);
+}
+.fc .fc-popover-body { max-height: min(320px, 60vh); overflow-y: auto; }
+.fc .fc-popover-header { background: var(--hover); }
+
+@media (max-width: 420px) {
+  .month-year { display: none; }
+  .toolbar { gap: 4px; }
+  .toolbar-actions, .nav-group { gap: 0; }
+  .nav-group { margin-right: 0; }
 }
 
 /* 일정 편집 창 */

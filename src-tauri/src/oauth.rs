@@ -36,6 +36,7 @@ const PUBLIC_HOLIDAY_PREFIX: &str = "공휴일";
 pub enum Provider {
     Google,
     Microsoft,
+    Teams,
 }
 
 struct ProviderConfig {
@@ -53,6 +54,7 @@ impl Provider {
         match self {
             Provider::Google => "google-refresh-token",
             Provider::Microsoft => "microsoft-refresh-token",
+            Provider::Teams => "teams-refresh-token",
         }
     }
 
@@ -69,7 +71,7 @@ impl Provider {
                 redirect_host: "127.0.0.1",
                 extra_auth_params: &[("access_type", "offline"), ("prompt", "consent")],
             }),
-            Provider::Microsoft => {
+            Provider::Microsoft | Provider::Teams => {
                 // 회사 계정 전용(단일 테넌트) 앱은 common 주소로 로그인할 수 없습니다.
                 let tenant_id = required_env("MICROSOFT_TENANT_ID")?;
                 Ok(ProviderConfig {
@@ -81,7 +83,11 @@ impl Provider {
                     token_url: format!(
                         "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
                     ),
-                    scope: "offline_access https://graph.microsoft.com/Calendars.Read",
+                    scope: if matches!(self, Provider::Teams) {
+                        "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/ChannelMessage.Read.All https://graph.microsoft.com/ChannelMessage.Send https://graph.microsoft.com/ChannelMember.Read.All"
+                    } else {
+                        "offline_access https://graph.microsoft.com/Calendars.Read"
+                    },
                     redirect_host: "localhost",
                     extra_auth_params: &[("prompt", "select_account")],
                 })
@@ -142,6 +148,7 @@ pub struct NewEvent {
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+    expires_in: Option<u64>,
 }
 
 pub(crate) fn http_client() -> Result<reqwest::Client, String> {
@@ -210,6 +217,14 @@ pub fn provider_status() -> Vec<ProviderStatus> {
             connected: load_refresh_token(provider).is_ok(),
         })
         .collect()
+}
+
+pub fn teams_status() -> ProviderStatus {
+    ProviderStatus {
+        provider: Provider::Teams,
+        configured: Provider::Teams.config().is_ok(),
+        connected: load_refresh_token(Provider::Teams).is_ok(),
+    }
 }
 
 pub async fn connect(app: &AppHandle, provider: Provider) -> Result<(), String> {
@@ -358,7 +373,11 @@ async fn request_token(
         .map_err(|error| format!("토큰 응답 해석 실패: {error}"))
 }
 
-async fn access_token(provider: Provider) -> Result<String, String> {
+pub(crate) async fn access_token(provider: Provider) -> Result<String, String> {
+    Ok(access_token_with_lifetime(provider).await?.0)
+}
+
+pub(crate) async fn access_token_with_lifetime(provider: Provider) -> Result<(String, u64), String> {
     let config = provider.config()?;
     let refresh_token = load_refresh_token(provider)
         .map_err(|error| format!("저장된 토큰을 읽을 수 없습니다. 먼저 로그인해 주세요: {error}"))?;
@@ -381,7 +400,7 @@ async fn access_token(provider: Provider) -> Result<String, String> {
     if let Some(rotated) = &token.refresh_token {
         store_refresh_token(provider, rotated)?;
     }
-    Ok(token.access_token)
+    Ok((token.access_token, token.expires_in.unwrap_or(0)))
 }
 
 // 다시 쓸 수 없는 토큰을 지워 화면에 로그인 버튼이 나오게 합니다.
@@ -427,6 +446,7 @@ pub async fn fetch_events(
     match provider {
         Provider::Google => fetch_google(&access_token, start, end).await,
         Provider::Microsoft => fetch_microsoft(&access_token, start, end).await,
+        Provider::Teams => Err("Teams는 일정 공급자가 아닙니다.".to_string()),
     }
 }
 

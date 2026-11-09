@@ -3,6 +3,10 @@ mod event_cache;
 mod news;
 mod oauth;
 mod single_instance;
+mod teams;
+mod teams_settings;
+mod teams_read;
+mod link_preview;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -451,6 +455,9 @@ fn place_window(app: &AppHandle, summoned: bool) -> Result<(), String> {
         .get_webview_window(MAIN_LABEL)
         .ok_or_else(|| tauri::Error::WindowNotFound.to_string())?;
 
+    // Allow keyboard input in both modes. Apply Tao's window styles before
+    // reparenting: changing them afterwards can overwrite WS_CHILD/WS_EX_LAYERED.
+    window.set_focusable(true).map_err(|error| error.to_string())?;
     if summoned {
         desktop_pin::float_on_top(&window)?;
     } else {
@@ -478,6 +485,14 @@ fn toggle_summoned(app: &AppHandle) -> Result<(), String> {
     place_window(app, summoned)?;
     state.summoned.store(summoned, Ordering::SeqCst);
     Ok(())
+}
+
+// Focus WebView2 itself (MoveFocus), not the top-level window. Window::set_focus
+// brings a window forward; text input must not change the desktop parent or mode.
+#[tauri::command]
+fn focus_widget_input(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window(MAIN_LABEL).ok_or("위젯 입력 화면을 찾을 수 없습니다.")?
+        .as_ref().set_focus().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -771,8 +786,7 @@ async fn open_event_editor(
         .map_err(|error| error.to_string())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(context: tauri::Context<tauri::Wry>) {
     // `tauri dev`는 src-tauri에서 실행되므로 리포지토리 루트의 파일을 읽습니다.
     let _ = dotenvy::from_filename("../.env.local");
 
@@ -828,6 +842,12 @@ pub fn run() {
                 app.path().app_local_data_dir()?.join(ROOM_CACHE_FILE),
             )));
             app.manage(NewsCache(app.path().app_local_data_dir()?.join(NEWS_CACHE_FILE)));
+            app.manage(teams::TeamsSession::default());
+            app.manage(link_preview::PreviewStore::default());
+            app.manage(teams_read::ReadStore::new(app.path().app_config_dir()?.join("teams-read-marks.json")));
+            app.manage(teams_settings::ChannelStore::new(
+                app.path().app_config_dir()?.join("teams-channels.json"),
+            ));
 
             if let Some(window) = app.get_webview_window(MAIN_LABEL) {
                 *app.state::<WidgetState>().layout.lock().unwrap() = DisplayLayout::read(&window);
@@ -881,6 +901,20 @@ pub fn run() {
             autostart_enabled,
             set_autostart,
             provider_status,
+            focus_widget_input,
+            teams::teams_status,
+            teams_read::teams_load_read_marks,
+            teams_read::teams_mark_read,
+            teams_settings::teams_load_channels,
+            teams_settings::teams_save_channels,
+            teams::teams_connect,
+            teams::teams_messages,
+            teams::teams_members,
+            teams::teams_send,
+            teams::teams_react,
+            teams::teams_open,
+            teams::teams_open_message_url,
+            link_preview::teams_link_preview,
             connect,
             cached_events,
             fetch_events,
@@ -896,7 +930,7 @@ pub fn run() {
             open_event_editor,
             focus_event_editor
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|app, event| {

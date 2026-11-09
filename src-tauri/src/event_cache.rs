@@ -38,6 +38,7 @@ fn entry_key(provider: Provider, from: &str, to: &str) -> String {
     let provider = match provider {
         Provider::Google => "google",
         Provider::Microsoft => "microsoft",
+        Provider::Teams => "teams",
     };
     format!("{provider}|{from}|{to}")
 }

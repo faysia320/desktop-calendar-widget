@@ -20,14 +20,13 @@ import interactionPlugin from "@fullcalendar/interaction";
 import koLocale from "@fullcalendar/core/locales/ko";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import EventEditor from "./EventEditor";
+import TeamsPanel from "./TeamsPanel";
 import { Article, NewsFeed, formatArticleAge, htmlToText } from "./news";
 import {
   CalendarEvent,
   PROVIDER_LABELS,
   Provider,
   RemoteEvent,
-  compareEvents,
-  describeDay,
   eventPhase,
   formatEventTime,
   formatFetchedAt,
@@ -246,7 +245,7 @@ function eventColorStyle(event: CalendarEvent): CSSProperties {
   return { "--event-color": event.color ?? `var(--${event.provider})` } as CSSProperties;
 }
 
-// 메뉴를 닫아도 보이도록 오류와 오프라인 안내는 상세 패널에 표시합니다.
+// 메뉴를 닫아도 보이도록 오류와 오프라인 안내는 캘린더 아래에 표시합니다.
 function Notices({
   statuses,
   errors,
@@ -374,43 +373,6 @@ function WidgetMenu({
   );
 }
 
-function EventRow({ event, now, onEdit }: { event: CalendarEvent; now: string; onEdit: () => void }) {
-  const phase = eventPhase(event, now);
-  const content = (
-    <>
-      <span className="event-bar" />
-      <span className="event-body">
-        <span className="event-title">{event.title}</span>
-        <span className="event-meta">
-          {formatEventTime(event)}
-          {phase === "ongoing" && <span className="event-live">진행 중</span>}
-        </span>
-        {event.location && (
-          <span className="event-meta event-location">
-            <Icon name="pin" size={12} />
-            <span>{event.location}</span>
-          </span>
-        )}
-      </span>
-    </>
-  );
-
-  return (
-    <li className={`event-${phase}`} style={eventColorStyle(event)}>
-      {event.editable ? (
-        <button className="event-row editable" title="일정 편집" onClick={onEdit}>
-          {content}
-          <span className="event-chevron"><Icon name="chevronRight" size={14} /></span>
-        </button>
-      ) : (
-        <div className="event-row" title={`${PROVIDER_LABELS[event.provider]} 일정은 읽기 전용입니다.`}>
-          {content}
-        </div>
-      )}
-    </li>
-  );
-}
-
 const HOVER_CARD_GAP = 6;
 const HOVER_CARD_MARGIN = 8;
 const ROOM_TOOLTIP_MAX_ATTENDEES = 12;
@@ -425,7 +387,10 @@ function HoverCard({ anchor, color, children }: { anchor: DOMRect; color: string
     const above = anchor.top - offsetHeight - HOVER_CARD_GAP;
     setPosition({
       left: Math.max(HOVER_CARD_MARGIN, Math.min(anchor.left, window.innerWidth - offsetWidth - HOVER_CARD_MARGIN)),
-      top: above >= HOVER_CARD_MARGIN ? above : anchor.bottom + HOVER_CARD_GAP,
+      top: Math.max(HOVER_CARD_MARGIN, Math.min(
+        above >= HOVER_CARD_MARGIN ? above : anchor.bottom + HOVER_CARD_GAP,
+        window.innerHeight - offsetHeight - HOVER_CARD_MARGIN,
+      )),
     });
   }, [anchor]);
 
@@ -476,7 +441,18 @@ function RoomTooltip({ booking, anchor, color }: { booking: RemoteEvent; anchor:
   );
 }
 
-// 내 일정과 섞이지 않도록 고른 날의 회의실 예약을 상세 패널 아래에 가로 시간표로 보여 줍니다.
+function CalendarTooltip({ event, anchor, now }: { event: CalendarEvent; anchor: DOMRect; now: string }) {
+  return <HoverCard anchor={anchor} color={event.color ?? `var(--${event.provider})`}>
+    <strong className="hover-card-title">{event.title}</strong>
+    <span className="hover-card-meta">{event.start.slice(0, 10)} · {formatEventTime(event)}</span>
+    {eventPhase(event, now) === "ongoing" && <span className="hover-card-meta">진행 중</span>}
+    {event.location && <span className="hover-card-meta">장소 · {event.location}</span>}
+    {event.meeting?.summary && <p className="hover-card-summary">{event.meeting.summary}</p>}
+    <span className="hover-card-note">{PROVIDER_LABELS[event.provider]} · {event.editable ? "클릭하여 일정 수정" : "읽기 전용 일정"}</span>
+  </HoverCard>;
+}
+
+// 고른 날의 회의실 예약은 캘린더 아래의 가로 시간표로 보여 줍니다.
 function RoomSchedules({
   names,
   bookings,
@@ -561,33 +537,39 @@ function RoomSchedules({
   );
 }
 
-function NewsPanel({ now }: { now: Date }) {
+function NewsPanel({ now, active }: { now: Date; active: boolean }) {
   const [feed, setFeed] = useState<NewsFeed | null>(null);
   const [error, setError] = useState("");
   const [hovered, setHovered] = useState<{ article: Article; anchor: DOMRect } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const pending = useRef(false);
+
+  const load = useCallback(async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setLoading(true);
+    try { setFeed(await invoke<NewsFeed>("geeknews")); setError(""); }
+    catch (reason) { setError(String(reason)); }
+    finally { pending.current = false; setLoading(false); }
+  }, []);
 
   useEffect(() => {
-    const load = () =>
-      invoke<NewsFeed>("geeknews").then(
-        (next) => {
-          setFeed(next);
-          setError("");
-        },
-        (reason) => setError(String(reason)),
-      );
-    load();
-    const timer = window.setInterval(load, NEWS_REFRESH_INTERVAL_MS);
+    void load();
+    const timer = window.setInterval(() => { if (!document.hidden) void load(); }, NEWS_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [load]);
+  useEffect(() => { if (!active) setHovered(null); }, [active]);
 
   return (
     <section className="news" aria-label="GeekNews">
       <header className="news-header">
-        <h2>GeekNews</h2>
-        {feed?.stale && <span className="news-status">{formatFetchedAt(feed.fetched_at)}에 받은 글</span>}
+        <span className="news-status">{feed?.stale ? `${formatFetchedAt(feed.fetched_at)}에 받은 글` : "최신 소식 · 30분마다 갱신"}</span>
+        <button className={loading ? "icon-button spinning" : "icon-button"} aria-label="GeekNews 새로고침" title="GeekNews 새로고침"
+          disabled={loading} onClick={() => void load()}><Icon name="refresh" size={14} /></button>
       </header>
       {feed ? (
         <ul className="news-list" onScroll={() => setHovered(null)}>
+          {feed.articles.length === 0 && <li className="news-empty">표시할 소식이 없습니다.</li>}
           {feed.articles.map((article) => (
             <li key={article.id}>
               <button
@@ -605,8 +587,8 @@ function NewsPanel({ now }: { now: Date }) {
       ) : (
         <p className="news-empty">{error ? "글을 불러오지 못했습니다." : "불러오는 중입니다."}</p>
       )}
-      {feed && error && <p className="error news-status">{error}</p>}
-      {hovered && (
+      {error && <p className="error news-status" role="alert">{error}</p>}
+      {active && hovered && (
         <HoverCard key={hovered.article.id} anchor={hovered.anchor} color="var(--accent)">
           <strong className="hover-card-title">{htmlToText(hovered.article.title)}</strong>
           <span className="hover-card-meta">{formatArticleAge(hovered.article.published, now)}</span>
@@ -661,6 +643,8 @@ function Widget() {
   const [shownMonth, setShownMonth] = useState(now);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [hoveredEvent, setHoveredEvent] = useState<{ event: CalendarEvent; anchor: DOMRect } | null>(null);
+  const [calendarError, setCalendarError] = useState("");
   const [theme, setTheme] = useTheme();
   const [transparency, setTransparency] = useBackgroundTransparency();
   const calendarRef = useRef<FullCalendar>(null);
@@ -701,7 +685,11 @@ function Widget() {
   }
 
   function openNewEvent(date: string) {
-    if (googleConnected) invoke("open_event_editor", { date });
+    setHoveredEvent(null);
+    if (googleConnected) {
+      setCalendarError("");
+      invoke("open_event_editor", { date }).catch((reason) => setCalendarError(String(reason)));
+    }
   }
 
   // 빈 날짜 칸을 두 번 누르면 그 날짜로 일정을 추가합니다.
@@ -712,9 +700,11 @@ function Widget() {
     if (date) openNewEvent(date);
   }
 
-  // 위젯은 키보드 입력을 받지 않으므로 휠로도 달을 넘길 수 있게 합니다.
+  // 팝오버 안에서는 목록만 스크롤하고, 그 밖에서는 휠로 달을 넘깁니다.
   function handleCalendarWheel(event: WheelEvent<HTMLElement>) {
+    if ((event.target as Element).closest(".fc-popover")) return;
     if (menuOpen || event.deltaY === 0 || event.timeStamp - lastWheel.current < WHEEL_THROTTLE_MS) return;
+    setHoveredEvent(null);
     lastWheel.current = event.timeStamp;
     const calendar = calendarRef.current?.getApi();
     if (event.deltaY > 0) calendar?.next();
@@ -752,18 +742,11 @@ function Widget() {
         start: event.start.replace(" ", "T"),
         end: event.end.replace(" ", "T"),
         allDay: event.all_day,
-        extendedProps: { style: eventColorStyle(event) },
+        extendedProps: { style: eventColorStyle(event), source: event },
       })),
     [events],
   );
 
-  const dayEvents = useMemo(
-    () => events.filter((event) => occursOn(event, selectedDay)).sort(compareEvents),
-    [events, selectedDay],
-  );
-
-  const selectedHoliday = holidayName(holidays, selectedDay);
-  const selected = describeDay(selectedDay, today);
   const minuteNow = toMinuteKey(now);
 
   const googleConnected = statuses.some(
@@ -782,6 +765,11 @@ function Widget() {
                 <span className="month-year">{shownMonth.getFullYear()}년</span> {shownMonth.getMonth() + 1}월
               </h1>
               <div className="toolbar-actions">
+                <button className="icon-button" disabled={!googleConnected}
+                  title={googleConnected ? `${selectedDay} 일정 추가 (날짜 더블클릭)` : "Google에 로그인하면 일정을 추가할 수 있습니다."}
+                  aria-label="일정 추가" onClick={() => openNewEvent(selectedDay)}>
+                  <Icon name="plus" size={17} />
+                </button>
                 <div className="nav-group">
                   <button
                     className="icon-button"
@@ -843,11 +831,12 @@ function Widget() {
                 dayMaxEvents
                 displayEventTime={false}
                 eventDisplay="block"
-                moreLinkContent={(more) => `+${more.num}개`}
-                // 팝오버 대신 상세 패널에서 그날의 일정을 보여 줍니다. 값을 돌려주지 않으면 팝오버가 열립니다.
+                moreLinkContent={(more) => <span>+{more.num}<span className="more-suffix">개</span></span>}
+                // 넘치는 일정도 캘린더 팝오버에서 보고 수정합니다.
                 moreLinkClick={(more) => {
+                  setHoveredEvent(null);
                   setSelectedDay(toDayKey(more.date));
-                  return "dayGridMonth";
+                  return "popover";
                 }}
                 dayCellContent={(cell) => {
                   const holiday = holidayName(holidays, toDayKey(cell.date));
@@ -872,7 +861,6 @@ function Widget() {
                     <span
                       className={spansDay ? "chip chip-bar" : "chip"}
                       style={arg.event.extendedProps.style}
-                      title={arg.event.title}
                     >
                       {arg.event.title}
                     </span>
@@ -881,9 +869,22 @@ function Widget() {
                 events={calendarEvents}
                 dateClick={(click) => setSelectedDay(click.dateStr)}
                 eventClick={(click) => {
+                  click.jsEvent.preventDefault();
+                  setHoveredEvent(null);
                   if (click.event.start) setSelectedDay(toDayKey(click.event.start));
+                  const event = click.event.extendedProps.source as CalendarEvent;
+                  if (event.editable && event.calendar_id) {
+                    setCalendarError("");
+                    invoke("open_event_editor", {
+                      date: event.start.slice(0, 10),
+                      target: { calendarId: event.calendar_id, eventId: event.id },
+                    }).catch((reason) => setCalendarError(String(reason)));
+                  }
                 }}
+                eventMouseEnter={(info) => setHoveredEvent({ event: info.event.extendedProps.source, anchor: info.el.getBoundingClientRect() })}
+                eventMouseLeave={() => setHoveredEvent(null)}
                 datesSet={(dates) => {
+                  setHoveredEvent(null);
                   const next = { from: toDayKey(dates.start), to: toDayKey(dates.end) };
                   setRange((current) =>
                     current?.from === next.from && current.to === next.to ? current : next,
@@ -892,66 +893,19 @@ function Widget() {
                 }}
               />
             </div>
+            {status && status.rooms.length > 0 && (
+              <div className="calendar-rooms">
+                <RoomSchedules names={status.rooms} bookings={roomBookings} day={selectedDay} now={minuteNow} />
+              </div>
+            )}
+            {calendarError && <p className="error" role="alert">{calendarError}</p>}
+            <Notices statuses={statuses} errors={errors} staleSince={staleSince}
+              shortcutError={status?.shortcut_error ?? null} onConnect={connect} />
           </section>
 
-          <aside className="details">
-            <div className="details-header">
-              <div className="details-heading">
-                <p className={selected.relative === "오늘" ? "details-eyebrow today" : "details-eyebrow"}>
-                  {selected.relative && `${selected.relative} · `}
-                  {selected.weekday}
-                </p>
-                <h2>{selected.heading}</h2>
-                {selectedHoliday && <p className="details-holiday">{selectedHoliday}</p>}
-              </div>
-              <button
-                className="add-button"
-                disabled={!googleConnected}
-                title={googleConnected ? "일정 추가" : "Google에 로그인하면 일정을 추가할 수 있습니다."}
-                aria-label="일정 추가"
-                onClick={() => openNewEvent(selectedDay)}
-              >
-                <Icon name="plus" size={18} />
-              </button>
-            </div>
-
-            {dayEvents.length === 0 ? (
-              <div className="empty">
-                <p>일정이 없습니다</p>
-                {googleConnected && <p className="muted">날짜를 두 번 누르면 일정을 추가할 수 있습니다.</p>}
-              </div>
-            ) : (
-              <ul className="events">
-                {dayEvents.map((event) => (
-                  <EventRow
-                    key={`${event.provider}:${event.id}`}
-                    event={event}
-                    now={minuteNow}
-                    onEdit={() =>
-                      invoke("open_event_editor", {
-                        date: selectedDay,
-                        target: { calendarId: event.calendar_id, eventId: event.id },
-                      })
-                    }
-                  />
-                ))}
-              </ul>
-            )}
-
-            {status && status.rooms.length > 0 && (
-              <RoomSchedules names={status.rooms} bookings={roomBookings} day={selectedDay} now={minuteNow} />
-            )}
-
-            <Notices
-              statuses={statuses}
-              errors={errors}
-              staleSince={staleSince}
-              shortcutError={status?.shortcut_error ?? null}
-              onConnect={connect}
-            />
-          </aside>
-          <NewsPanel now={now} />
+          <TeamsPanel news={active => <NewsPanel now={now} active={active} />} />
         </div>
+        {hoveredEvent && !editorOpen && <CalendarTooltip {...hoveredEvent} now={minuteNow} />}
         {editorOpen && <div className="modal-backdrop" onMouseDown={() => invoke("focus_event_editor")} />}
       </div>
     </main>

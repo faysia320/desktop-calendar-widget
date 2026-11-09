@@ -12,7 +12,8 @@ edition = "2024"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "desktop_calendar_widget_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# This Windows desktop app only links the Rust library into its executable.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -31,7 +32,7 @@ keyring = { version = "3", features = ["windows-native"] }
 rand = "0.9"
 reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
-tokio = { version = "1", features = ["io-util", "net", "time"] }
+tokio = { version = "1", features = ["io-util", "net", "time", "sync"] }
 url = "2"
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
@@ -43,12 +44,23 @@ windows-sys = { version = "0.60", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 roxmltree = "0.21.2"
+scraper = "0.29"
 
 
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+# Fast repeatable desktop builds. UI assets are embedded, so every UI change
+# relinks this crate; fat LTO made even a CSS change take several minutes.
 [profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
+codegen-units = 16
+lto = false
+opt-level = 2
+incremental = true
 panic = "abort"
 strip = true
+
+# Optional size-focused distribution build, not used for routine updates.
+[profile.distribution]
+inherits = "release"
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+incremental = false
