@@ -22,6 +22,7 @@ import "pretendard/dist/web/variable/pretendardvariable.css";
 import EventEditor from "./EventEditor";
 import TeamsPanel from "./TeamsPanel";
 import useTransparency from "./useTransparency";
+import CalendarDayEvents from "./CalendarDayEvents";
 import { Article, NewsFeed, formatArticleAge, htmlToText } from "./news";
 import {
   CalendarEvent,
@@ -210,10 +211,6 @@ function useNow() {
   }, []);
 
   return now;
-}
-
-function eventColorStyle(event: CalendarEvent): CSSProperties {
-  return { "--event-color": event.color ?? `var(--${event.provider})` } as CSSProperties;
 }
 
 // 메뉴를 닫아도 보이도록 오류와 오프라인 안내는 캘린더 아래에 표시합니다.
@@ -633,6 +630,7 @@ function Widget() {
   const transparencyState = useTransparency();
   const { value: transparency, change: setTransparency } = transparencyState;
   const calendarRef = useRef<FullCalendar>(null);
+  const monthRef = useRef<HTMLDivElement>(null);
   const shownToday = useRef(today);
   const lastWheel = useRef(0);
   const { statuses, events, holidays, roomBookings, errors, staleSince, refreshing, syncedAt, setErrors, refresh } =
@@ -721,18 +719,15 @@ function Widget() {
     } finally { setConnectingProvider(null); }
   }
 
-  const calendarEvents = useMemo(
-    () =>
-      events.map((event) => ({
-        id: `${event.provider}:${event.id}`,
-        title: event.title,
-        start: event.start.replace(" ", "T"),
-        end: event.end.replace(" ", "T"),
-        allDay: event.all_day,
-        extendedProps: { style: eventColorStyle(event), source: event },
-      })),
-    [events],
-  );
+  function openCalendarEvent(event: CalendarEvent, day: string) {
+    setSelectedDay(day);
+    if (event.editable && event.calendar_id) {
+      setCalendarError("");
+      invoke("open_event_editor", {
+        date: event.start.slice(0, 10), target: { calendarId: event.calendar_id, eventId: event.id },
+      }).catch(reason => setCalendarError(String(reason)));
+    }
+  }
 
   const minuteNow = toMinuteKey(now);
 
@@ -807,7 +802,7 @@ function Widget() {
                 onConnect={connect}
               />
             )}
-            <div className="month" onDoubleClick={handleCalendarDoubleClick} onWheel={handleCalendarWheel}>
+            <div className="month" ref={monthRef} onDoubleClick={handleCalendarDoubleClick} onWheel={handleCalendarWheel}>
               <FullCalendar
                 ref={calendarRef}
                 plugins={[dayGridPlugin, interactionPlugin]}
@@ -818,15 +813,6 @@ function Widget() {
                 headerToolbar={false}
                 fixedWeekCount={false}
                 dayMaxEvents
-                displayEventTime={false}
-                eventDisplay="block"
-                moreLinkContent={(more) => <span>+{more.num}<span className="more-suffix">개</span></span>}
-                // 넘치는 일정도 캘린더 팝오버에서 보고 수정합니다.
-                moreLinkClick={(more) => {
-                  setHoveredEvent(null);
-                  setSelectedDay(toDayKey(more.date));
-                  return "popover";
-                }}
                 dayCellContent={(cell) => {
                   const holiday = holidayName(holidays, toDayKey(cell.date));
                   return (
@@ -843,35 +829,7 @@ function Widget() {
                     ...(holidayName(holidays, day) ? ["day-holiday"] : []),
                   ];
                 }}
-                eventContent={(arg) => {
-                  // 하루를 차지하는 일정은 막대로, 시간이 정해진 일정은 점으로 구분합니다.
-                  const spansDay = arg.event.allDay || !arg.isStart || !arg.isEnd;
-                  return (
-                    <span
-                      className={spansDay ? "chip chip-bar" : "chip"}
-                      style={arg.event.extendedProps.style}
-                    >
-                      {arg.event.title}
-                    </span>
-                  );
-                }}
-                events={calendarEvents}
                 dateClick={(click) => setSelectedDay(click.dateStr)}
-                eventClick={(click) => {
-                  click.jsEvent.preventDefault();
-                  setHoveredEvent(null);
-                  if (click.event.start) setSelectedDay(toDayKey(click.event.start));
-                  const event = click.event.extendedProps.source as CalendarEvent;
-                  if (event.editable && event.calendar_id) {
-                    setCalendarError("");
-                    invoke("open_event_editor", {
-                      date: event.start.slice(0, 10),
-                      target: { calendarId: event.calendar_id, eventId: event.id },
-                    }).catch((reason) => setCalendarError(String(reason)));
-                  }
-                }}
-                eventMouseEnter={(info) => setHoveredEvent({ event: info.event.extendedProps.source, anchor: info.el.getBoundingClientRect() })}
-                eventMouseLeave={() => setHoveredEvent(null)}
                 datesSet={(dates) => {
                   setHoveredEvent(null);
                   const next = { from: toDayKey(dates.start), to: toDayKey(dates.end) };
@@ -881,6 +839,7 @@ function Widget() {
                   setShownMonth(dates.view.currentStart);
                 }}
               />
+              <CalendarDayEvents root={monthRef} events={events} onHover={setHoveredEvent} onOpen={openCalendarEvent} />
             </div>
             {status && status.rooms.length > 0 && (
               <div className="calendar-rooms">

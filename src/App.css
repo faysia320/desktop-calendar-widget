@@ -1060,6 +1060,13 @@ p {
   margin: 0 3px;
 }
 
+.calendar-day-events { position: absolute; right: 3px; z-index: 6; min-width: 0; }
+.calendar-day-event { display: block; width: 100%; height: 20px; min-width: 0; padding: 0; border: 0; border-radius: 5px; background: transparent; text-align: left; overflow: hidden; font-size: 11.5px; }
+.calendar-day-event:hover, .calendar-day-event:focus-visible { background: var(--hover); outline: 1px solid var(--hairline); }
+.calendar-day-dots { display: grid; align-content: start; justify-content: start; }
+.calendar-day-event.calendar-event-dot { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; border-radius: 50%; }
+.calendar-event-dot > span { width: var(--dot-size, 6px); height: var(--dot-size, 6px); flex: none; border-radius: 50%; background: var(--event-color); }
+
 .fc .fc-daygrid-event {
   margin: 0 0 1px;
   border: none;
