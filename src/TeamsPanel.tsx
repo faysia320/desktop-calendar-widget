@@ -27,6 +27,7 @@ const REACTION_CHOICES = [
   ["😢", "슬픔"], ["😠", "화남"], ["🎉", "축하"], ["👏", "박수"],
   ["🙏", "감사"], ["✅", "확인"], ["👀", "확인 중"], ["🔥", "최고"],
 ];
+const QUICK_REACTIONS = 6;
 
 function messageText(message: TeamsMessage) {
   if (message.deleted) return "삭제된 메시지입니다.";
@@ -406,24 +407,31 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
         {messages.map((message) => <Fragment key={message.id}>
           {!parent && lastRead?.divider === message.id && <div className="teams-read-divider" role="separator" aria-label="마지막으로 읽은 곳">
             <span>마지막으로 읽은 곳</span></div>}
-          <article className="teams-message" data-message-id={message.id}>
-          <div className="teams-avatar" aria-hidden="true">{message.author.slice(0, 1)}</div>
+          <article className={message.mine ? "teams-message mine" : "teams-message"} data-message-id={message.id}>
+          {!message.mine && <div className="teams-avatar" aria-hidden="true">{message.author.slice(0, 1)}</div>}
           <div className="teams-message-content">
-            <header><strong>{message.author}</strong><time dateTime={message.created_at}>{messageTime(message.created_at)}</time></header>
+            {!message.deleted && <div className="teams-message-actions" role="group" aria-label="반응 추가">
+              {REACTION_CHOICES.slice(0, QUICK_REACTIONS).map(([emoji, label]) => {
+                const mine = message.reactions?.some((reaction) => reaction.reaction_type === emoji && reaction.mine) ?? false;
+                return <button key={emoji} type="button" className="teams-quick-reaction" data-tooltip={label} aria-label={label} aria-pressed={mine}
+                  disabled={reacting !== null} onClick={() => reactTo(message, emoji, mine)}>{emoji}</button>;
+              })}
+              <button type="button" className="teams-reaction-add" aria-label="다른 반응" data-tooltip="다른 반응"
+                aria-expanded={reactionPicker === message.id} disabled={reacting !== null}
+                onClick={() => setReactionPicker((current) => current === message.id ? null : message.id)}>⋯</button>
+            </div>}
+            <header>{!message.mine && <strong>{message.author}</strong>}<time dateTime={message.created_at}>{messageTime(message.created_at)}</time></header>
             <div className="teams-message-bubble">
             {!message.deleted && message.subject && <h3>{message.subject}</h3>}
             <MessageBody body={message.body} bodyType={message.body_type} deleted={message.deleted}
               teamId={channel.teamId} channelId={channel.channelId} chatId={channel.chatId ?? null} />
             {!message.deleted && message.has_attachments && <button className="teams-link" onClick={() => openInTeams(message.web_url ?? channel.url)}>첨부 파일 · Teams에서 보기 ↗</button>}
             </div>
-            {!message.deleted && <div className="teams-reactions" aria-label="메시지 반응" aria-busy={reacting === message.id}>
+            {!message.deleted && (message.reactions?.length || reacting === message.id || reactionPicker === message.id) ? <div className="teams-reactions" aria-label="메시지 반응" aria-busy={reacting === message.id}>
               {(message.reactions ?? []).map((reaction) => <ReactionButton key={reaction.key}
                 reaction={reaction} channel={channel} account={account} disabled={reacting !== null}
                 onClick={() => reaction.reaction_type == null ? openInTeams(message.web_url ?? channel.url) : reactTo(message, reaction.reaction_type, reaction.mine)}>
               </ReactionButton>)}
-              <button type="button" className="teams-reaction-add" aria-label="반응 추가" data-tooltip="반응 추가"
-                aria-expanded={reactionPicker === message.id} disabled={reacting !== null}
-                onClick={() => setReactionPicker((current) => current === message.id ? null : message.id)}>☺ +</button>
               {reacting === message.id && <span className="muted" role="status">반영 중…</span>}
               {reactionPicker === message.id && <div className="teams-reaction-picker" role="group" aria-label="이모지 선택"
                 onKeyDown={(event) => { if (event.key === "Escape") setReactionPicker(null); }}>
@@ -434,7 +442,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
                 })}
                 <button type="button" className="teams-picker-close" aria-label="반응 선택 닫기" onClick={() => setReactionPicker(null)}>×</button>
               </div>}
-            </div>}
+            </div> : null}
             {!parent && !channel.chatId && !message.deleted && <button className="teams-reply" disabled={sending || reacting !== null} onClick={() => { setOpenedThreads((previous) => new Set(previous).add(message.id)); setParent(message); }}>
               {message.reply_count == null ? "댓글 보기 / 작성" : `댓글 ${message.reply_count}개 · 보기 / 작성`}
               {lastRead && (message.reply_activity ?? 0) > lastRead.mark && Date.parse(message.created_at) <= lastRead.mark && !openedThreads.has(message.id) && <span className="teams-new-replies">새 댓글</span>}
