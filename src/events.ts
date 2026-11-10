@@ -12,13 +12,16 @@ export type RemoteEvent = {
   text_color: string | null;
   editable: boolean;
   meeting?: MeetingDetails;
+  meeting_notice?: string;
 };
 
-// 내가 참석하는 회의실 예약에만 있습니다.
+// 내 일정 또는 공유된 회의실 캘린더에서 읽은 상세입니다.
 export type MeetingDetails = {
   subject: string;
   summary: string | null;
   attendees: string[];
+  organizer?: string | null;
+  participants?: { name: string; kind: string | null; response: string | null }[];
 };
 
 export type CalendarEvent = RemoteEvent & { provider: Provider };

@@ -21,6 +21,7 @@ import koLocale from "@fullcalendar/core/locales/ko";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import EventEditor from "./EventEditor";
 import TeamsPanel from "./TeamsPanel";
+import useTransparency from "./useTransparency";
 import { Article, NewsFeed, formatArticleAge, htmlToText } from "./news";
 import {
   CalendarEvent,
@@ -46,8 +47,6 @@ const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const NEWS_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const NOW_TICK_MS = 30 * 1000;
 const WHEEL_THROTTLE_MS = 350;
-const TRANSPARENCY_STORAGE_KEY = "background-transparency";
-const DEFAULT_TRANSPARENCY = 20;
 const THEME_STORAGE_KEY = "theme";
 
 type Theme = "system" | "light" | "dark";
@@ -91,34 +90,6 @@ function useTheme() {
   }
 
   return [theme, change] as const;
-}
-
-function readSavedTransparency(): number {
-  try {
-    const saved = Number(localStorage.getItem(TRANSPARENCY_STORAGE_KEY) ?? DEFAULT_TRANSPARENCY);
-    return saved >= 0 && saved <= 100 ? saved : DEFAULT_TRANSPARENCY;
-  } catch {
-    return DEFAULT_TRANSPARENCY;
-  }
-}
-
-function useBackgroundTransparency() {
-  const [transparency, setTransparency] = useState(readSavedTransparency);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty("--background-opacity", String(1 - transparency / 100));
-  }, [transparency]);
-
-  function change(next: number) {
-    setTransparency(next);
-    try {
-      localStorage.setItem(TRANSPARENCY_STORAGE_KEY, String(next));
-    } catch {
-      // 저장하지 못해도 이번 실행에서는 적용됩니다.
-    }
-  }
-
-  return [transparency, change] as const;
 }
 
 type WidgetStatus = {
@@ -312,6 +283,8 @@ function WidgetMenu({
   onThemeChange,
   transparency,
   onTransparencyChange,
+  transparencyState,
+  connectingProvider,
   onConnect,
 }: {
   statuses: ProviderStatus[];
@@ -319,6 +292,8 @@ function WidgetMenu({
   onThemeChange: (theme: Theme) => void;
   transparency: number;
   onTransparencyChange: (transparency: number) => void;
+  transparencyState: ReturnType<typeof useTransparency>;
+  connectingProvider: Provider | null;
   onConnect: (provider: Provider) => void;
 }) {
   return (
@@ -329,13 +304,14 @@ function WidgetMenu({
           <button
             key={status.provider}
             className="menu-item"
-            disabled={!status.configured || status.connected}
+            disabled={!status.configured || connectingProvider !== null || (status.connected && status.provider !== "microsoft")}
+            title={status.provider === "microsoft" && status.connected ? "공유 회의실 권한을 갱신하려면 Outlook 다시 연결" : undefined}
             onClick={() => onConnect(status.provider)}
           >
             <span className={`dot ${status.provider}`} />
             <span className="menu-label">{PROVIDER_LABELS[status.provider]}</span>
             <span className={status.configured && !status.connected ? "menu-state action" : "menu-state"}>
-              {providerStateLabel(status)}
+              {connectingProvider === status.provider ? "연결 중…" : status.provider === "microsoft" && status.connected ? "다시 연결" : providerStateLabel(status)}
             </span>
           </button>
         ))}
@@ -359,11 +335,16 @@ function WidgetMenu({
             min={0}
             max={100}
             step={5}
+            disabled={!transparencyState.ready}
             value={transparency}
             style={{ "--slider-fill": `${transparency}%` } as CSSProperties}
             onChange={(event) => onTransparencyChange(Number(event.target.value))}
           />
         </label>
+        {transparencyState.saving && <p className="muted" role="status">투명도 저장 중…</p>}
+        {transparencyState.error && <p className="error" role="alert">{transparencyState.error}
+          {!transparencyState.ready && <button onClick={transparencyState.retry}>다시 불러오기</button>}
+        </p>}
       </section>
       <section className="menu-group">
         <AutostartToggle />
@@ -407,38 +388,40 @@ function HoverCard({ anchor, color, children }: { anchor: DOMRect; color: string
   );
 }
 
+const RESPONSE_LABELS: Record<string, string> = {
+  accepted: "수락", tentativelyAccepted: "미정", declined: "거절", none: "미응답", notResponded: "미응답", organizer: "주최자",
+};
+const ATTENDEE_KINDS: Record<string, string> = { required: "필수", optional: "선택", resource: "회의실·자원" };
+
 function RoomTooltip({ booking, anchor, color }: { booking: RemoteEvent; anchor: DOMRect; color: string }) {
   const meeting = booking.meeting;
-  const organizer = booking.title.trim();
-  const hiddenAttendees = (meeting?.attendees.length ?? 0) - ROOM_TOOLTIP_MAX_ATTENDEES;
-
-  return (
-    <HoverCard anchor={anchor} color={color}>
-      <strong className="hover-card-title">{meeting?.subject ?? organizer}</strong>
-      <span className="hover-card-meta">
-        {booking.calendar_id} · {formatEventTime(booking)}
-      </span>
-      {meeting ? (
-        <>
-          <span className="hover-card-meta">예약자 {organizer}</span>
-          {meeting.summary && <p className="hover-card-summary">{meeting.summary}</p>}
-          {meeting.attendees.length > 0 && (
-            <div className="room-tooltip-attendees">
-              <h4>참여자 {meeting.attendees.length}명</h4>
-              <ul>
-                {meeting.attendees.slice(0, ROOM_TOOLTIP_MAX_ATTENDEES).map((attendee, index) => (
-                  <li key={`${attendee}-${index}`}>{attendee}</li>
-                ))}
-                {hiddenAttendees > 0 && <li className="more">외 {hiddenAttendees}명</li>}
-              </ul>
-            </div>
-          )}
-        </>
-      ) : (
-        <p className="hover-card-note">내가 참석하지 않는 회의는 내용과 참여자를 볼 수 없습니다.</p>
-      )}
-    </HoverCard>
-  );
+  const participants = meeting?.participants?.length ? meeting.participants
+    : (meeting?.attendees ?? []).map(name => ({ name, kind: null, response: null }));
+  const hiddenAttendees = participants.length - ROOM_TOOLTIP_MAX_ATTENDEES;
+  const counts = new Map<string, number>();
+  participants.forEach(person => {
+    const label = RESPONSE_LABELS[person.response ?? ""];
+    if (label) counts.set(label, (counts.get(label) ?? 0) + 1);
+  });
+  return <HoverCard anchor={anchor} color={color}>
+    <strong className="hover-card-title">{meeting?.subject ?? booking.title}</strong>
+    <span className="hover-card-meta">{booking.calendar_id} · {formatEventTime(booking)}</span>
+    {meeting ? <>
+      {meeting.organizer && <span className="hover-card-meta">주최자 · {meeting.organizer}</span>}
+      {meeting.summary && <p className="hover-card-summary">{meeting.summary}</p>}
+      {participants.length > 0 && <div className="room-tooltip-attendees">
+        <h4>참석자·자원 {participants.length}명</h4>
+        {counts.size > 0 && <p className="room-response-summary">{[...counts].map(([label, count]) => `${label} ${count}`).join(" · ")}</p>}
+        <ul className="room-participants">
+          {participants.slice(0, ROOM_TOOLTIP_MAX_ATTENDEES).map((person, index) => <li key={index}>
+            <span>{person.name}</span><small>{[ATTENDEE_KINDS[person.kind ?? ""], RESPONSE_LABELS[person.response ?? ""] ?? "응답 정보 없음"].filter(Boolean).join(" · ")}</small>
+          </li>)}
+          {hiddenAttendees > 0 && <li className="more">외 {hiddenAttendees}명</li>}
+        </ul>
+      </div>}
+      {!meeting.summary && participants.length === 0 && <p className="hover-card-note">캘린더가 제공하는 본문·참석자 정보가 없습니다.</p>}
+    </> : <p className="hover-card-note">{booking.meeting_notice ?? "회의실 상세 정보를 아직 가져오지 못했습니다. 새로고침 후 확인해 주세요."}</p>}
+  </HoverCard>;
 }
 
 function CalendarTooltip({ event, anchor, now }: { event: CalendarEvent; anchor: DOMRect; now: string }) {
@@ -642,11 +625,13 @@ function Widget() {
   const [range, setRange] = useState<DayRange | null>(null);
   const [shownMonth, setShownMonth] = useState(now);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [connectingProvider, setConnectingProvider] = useState<Provider | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [hoveredEvent, setHoveredEvent] = useState<{ event: CalendarEvent; anchor: DOMRect } | null>(null);
   const [calendarError, setCalendarError] = useState("");
   const [theme, setTheme] = useTheme();
-  const [transparency, setTransparency] = useBackgroundTransparency();
+  const transparencyState = useTransparency();
+  const { value: transparency, change: setTransparency } = transparencyState;
   const calendarRef = useRef<FullCalendar>(null);
   const shownToday = useRef(today);
   const lastWheel = useRef(0);
@@ -725,13 +710,15 @@ function Widget() {
   }
 
   async function connect(provider: Provider) {
+    if (connectingProvider) return;
+    setConnectingProvider(provider);
     setMenuOpen(false);
     try {
       await invoke("connect", { provider });
       await refresh();
     } catch (error) {
       setErrors((previous) => ({ ...previous, [provider]: String(error) }));
-    }
+    } finally { setConnectingProvider(null); }
   }
 
   const calendarEvents = useMemo(
@@ -814,6 +801,8 @@ function Widget() {
                 theme={theme}
                 onThemeChange={setTheme}
                 transparency={transparency}
+                transparencyState={transparencyState}
+                connectingProvider={connectingProvider}
                 onTransparencyChange={setTransparency}
                 onConnect={connect}
               />

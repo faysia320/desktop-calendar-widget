@@ -1,4 +1,4 @@
-import { KeyboardEvent, ReactNode, FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ReactNode, FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./icons";
 import { htmlToText } from "./news";
@@ -9,10 +9,11 @@ import {
 import "./TeamsPanel.css";
 import TeamsComposer, { ComposerDraft, emptyDraft } from "./TeamsComposer";
 import MessageBody from "./MessageBody";
+import ChannelTabs, { NEWS_TAB_ID } from "./ChannelTabs";
 import { teamsData } from "./teamsData";
 
 const POLL_INTERVAL = 60_000;
-const NEWS_TAB_ID = "builtin:geeknews";
+
 const REACTION_CHOICES = [
   ["👍", "좋아요"], ["❤️", "하트"], ["😆", "웃음"], ["😮", "놀람"],
   ["😢", "슬픔"], ["😠", "화남"], ["🎉", "축하"], ["👏", "박수"],
@@ -448,18 +449,6 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
     if (await saveChannels(channels, id)) setAdding(false);
   }
 
-  function moveTab(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const ids = [NEWS_TAB_ID, ...channels.map(channel => channel.id)];
-    let next = index;
-    if (event.key === "ArrowRight") next = (index + 1) % ids.length;
-    else if (event.key === "ArrowLeft") next = (index + ids.length - 1) % ids.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = ids.length - 1;
-    else return;
-    event.preventDefault(); void selectChannel(ids[next]);
-    event.currentTarget.closest('[role="tablist"]')?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
-  }
-
   async function connect() {
     if (connecting) return;
     setConnecting(true);
@@ -510,21 +499,9 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         <button className="icon-button" title="채널 추가" aria-label="채널 추가" disabled={!channelsReady || savingChannels} onClick={showAdd}><Icon name="plus" size={17} /></button>
       </div>
     </header>
-    <div className="teams-tabs" role="tablist" aria-label="Teams 채널">
-      <div className={newsSelected ? "teams-tab active teams-tab-fixed" : "teams-tab teams-tab-fixed"}>
-        <button role="tab" id="geeknews-tab" aria-selected={newsSelected} aria-controls="teams-news-view"
-          tabIndex={newsSelected ? 0 : -1} title="GeekNews · 고정 채널" disabled={savingChannels}
-          onClick={() => void selectChannel(NEWS_TAB_ID)} onKeyDown={event => moveTab(event, 0)}>
-          <span aria-hidden="true">N</span> GeekNews <span className="teams-fixed-label">고정</span>
-        </button>
-      </div>
-      {channels.map((channel, index) => <div className={active?.id === channel.id ? "teams-tab active" : "teams-tab"} key={channel.id}>
-        <button role="tab" aria-selected={active?.id === channel.id} aria-controls="teams-conversation"
-          tabIndex={active?.id === channel.id ? 0 : -1} title={teamsData.unread(channel.id) ? `${channel.name} · 위젯에서 미확인 메시지 있음` : channel.name} aria-label={`${channel.name}${teamsData.unread(channel.id) ? ", 미확인 메시지 있음" : ""}`} disabled={savingChannels} onClick={() => void selectChannel(channel.id)}
-          onKeyDown={event => moveTab(event, index + 1)}><span>#</span> {channel.name}{teamsData.unread(channel.id) && <span className="teams-unread-dot" aria-hidden="true" />}</button>
-        <button className="teams-tab-close" aria-label={`${channel.name} 탭 닫기`} title="탭 닫기" disabled={savingChannels} onClick={() => removeChannel(channel.id)}>×</button>
-      </div>)}
-    </div>
+    <ChannelTabs channels={channels} activeId={active?.id ?? NEWS_TAB_ID} disabled={savingChannels}
+      unread={id => teamsData.unread(id)} onSelect={id => void selectChannel(id)}
+      onReorder={next => { void saveChannels(next, activeId); }} onClose={removeChannel} />
     {error && <p className="teams-panel-error error" role="alert">{error}</p>}
     {teamsData.error && <div className="teams-error" role="alert"><p>{teamsData.error}</p><button onClick={() => { void teamsData.retryReadState(); }}>확인 상태 다시 불러오기</button></div>}
     {channelError && <div className="teams-error" role="alert"><p>{channelError}</p>

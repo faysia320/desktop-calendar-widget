@@ -1338,3 +1338,8 @@ p {
     transition: none !important;
   }
 }
+
+.room-response-summary { margin: 0 0 6px; font-size: 11px; color: var(--muted-solid); }
+.room-tooltip-attendees .room-participants { display: grid; gap: 3px; }
+.room-participants li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 8px; overflow-wrap: anywhere; }
+.room-participants small { color: var(--muted-solid); font-size: 10px; }

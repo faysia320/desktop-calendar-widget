@@ -24,10 +24,18 @@
 .teams-tab { display: flex; flex: none; align-items: center; min-width: 0; max-width: 190px; border-radius: 8px; color: var(--muted); }
 .teams-tab.active { color: var(--accent); background: var(--selected); }
 .teams-tab:hover { background: var(--hover); }
-.teams-tab > [role="tab"] { min-width: 0; padding: 6px 3px 6px 9px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
+.teams-tab > [role="tab"] { min-width: 0; padding: 6px 9px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
 .teams-tab > [role="tab"] span { opacity: 0.6; }
-.teams-tab-close { flex: none; width: 25px; height: 28px; padding: 0; font-size: 17px; opacity: 0.6; }
-.teams-tab-close:hover { opacity: 1; }
+.teams-tab { position: relative; }
+.teams-tab:not(.teams-tab-fixed) > [role="tab"] { cursor: grab; touch-action: none; }
+.teams-tab.dragging { opacity: 0.45; }
+.teams-tab.dragging > [role="tab"] { cursor: grabbing; }
+.teams-tab.drop-before::before, .teams-tab.drop-after::after { content: ""; position: absolute; top: 3px; bottom: 3px; width: 2px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+.teams-tab.drop-before::before { left: -3px; }
+.teams-tab.drop-after::after { right: -3px; }
+.teams-tab-menu { position: fixed; z-index: 100; min-width: 140px; padding: 4px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--popover); color: var(--text); box-shadow: var(--popover-shadow); backdrop-filter: blur(28px); }
+.teams-tab-menu button { width: 100%; padding: 8px 12px; text-align: left; font-size: 12px; border-radius: 5px; }
+.teams-tab-menu button:hover, .teams-tab-menu button:focus-visible { background: var(--selected); outline: none; }
 .teams-tab-fixed > [role="tab"] { padding-right: 9px; }
 .teams-tab > [role="tab"] .teams-fixed-label { margin-left: 3px; font-size: 9px; font-weight: 500; opacity: 0.7; }
 .teams-news-view { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }

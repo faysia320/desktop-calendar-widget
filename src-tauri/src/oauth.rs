@@ -86,7 +86,7 @@ impl Provider {
                     scope: if matches!(self, Provider::Teams) {
                         "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/ChannelMessage.Read.All https://graph.microsoft.com/ChannelMessage.Send https://graph.microsoft.com/ChannelMember.Read.All"
                     } else {
-                        "offline_access https://graph.microsoft.com/Calendars.Read"
+                        "offline_access https://graph.microsoft.com/Calendars.Read https://graph.microsoft.com/Calendars.Read.Shared"
                     },
                     redirect_host: "localhost",
                     extra_auth_params: &[("prompt", "select_account")],
@@ -112,9 +112,11 @@ pub struct ProviderStatus {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CalendarEvent {
-    // 내가 참석하는 회의실 예약에만 있습니다.
+    // 내 일정 또는 공유 권한으로 읽은 회의실 상세입니다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) meeting: Option<MeetingDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) meeting_notice: Option<String>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) start: String,
@@ -629,6 +631,7 @@ impl From<GoogleEvent> for CalendarEvent {
     fn from(event: GoogleEvent) -> Self {
         CalendarEvent {
             meeting: None,
+            meeting_notice: None,
             id: event.id,
             title: event.summary.unwrap_or_else(|| "(제목 없음)".to_string()),
             all_day: event.start.date.is_some(),
@@ -911,6 +914,7 @@ async fn fetch_microsoft(
     loop {
         events.extend(page.value.into_iter().map(|event| CalendarEvent {
             meeting: None,
+            meeting_notice: None,
             id: event.id,
             title: event.subject.unwrap_or_else(|| "(제목 없음)".to_string()),
             start: event.start.display(event.is_all_day),
@@ -997,6 +1001,7 @@ fn room_bookings(addresses: &[String], schedules: GraphSchedules) -> Result<Vec<
                     let start = item.start.display(false);
                     CalendarEvent {
                         meeting: None,
+                        meeting_notice: None,
                         id: format!("{name}|{start}"),
                         title: item
                             .subject
@@ -1022,6 +1027,17 @@ pub struct MeetingDetails {
     subject: String,
     summary: Option<String>,
     attendees: Vec<String>,
+    #[serde(default)]
+    organizer: Option<String>,
+    #[serde(default)]
+    participants: Vec<MeetingParticipant>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MeetingParticipant {
+    name: String,
+    kind: Option<String>,
+    response: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1037,6 +1053,7 @@ struct GraphMeetings {
 struct GraphMeeting {
     subject: Option<String>,
     body_preview: Option<String>,
+    organizer: Option<GraphOrganizer>,
     #[serde(default)]
     is_cancelled: bool,
     #[serde(default)]
@@ -1051,7 +1068,14 @@ struct GraphAttendee {
     #[serde(rename = "type")]
     kind: Option<String>,
     email_address: GraphEmailAddress,
+    status: Option<GraphResponseStatus>,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphOrganizer { email_address: GraphEmailAddress }
+#[derive(Deserialize)]
+struct GraphResponseStatus { response: Option<String> }
 
 #[derive(Deserialize)]
 struct GraphEmailAddress {
@@ -1066,6 +1090,94 @@ fn meeting_summary(preview: Option<String>) -> Option<String> {
     (!summary.is_empty()).then(|| summary.to_string())
 }
 
+fn email_label(email: &GraphEmailAddress) -> Option<String> {
+    email.name.as_ref().filter(|name| !name.trim().is_empty()).cloned()
+        .or_else(|| email.address.as_ref().filter(|address| !address.trim().is_empty()).cloned())
+}
+
+fn meeting_details(meeting: &GraphMeeting, addresses: &[String]) -> MeetingDetails {
+    MeetingDetails {
+        subject: meeting.subject.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "(제목 없음)".into()),
+        summary: meeting_summary(meeting.body_preview.clone()),
+        organizer: meeting.organizer.as_ref().and_then(|organizer| email_label(&organizer.email_address)),
+        attendees: meeting.attendees.iter().filter(|attendee| {
+            attendee.kind.as_deref() != Some("resource") && !addresses.iter().any(|address|
+                attendee.email_address.address.as_ref().is_some_and(|email| email.eq_ignore_ascii_case(address)))
+        }).filter_map(|attendee| email_label(&attendee.email_address)).collect(),
+        participants: meeting.attendees.iter().filter_map(|attendee| Some(MeetingParticipant {
+            name: email_label(&attendee.email_address)?, kind: attendee.kind.clone(),
+            response: attendee.status.as_ref().and_then(|status| status.response.clone()),
+        })).collect(),
+    }
+}
+
+fn room_view_url(address: &str) -> Url {
+    let mut url = Url::parse("https://graph.microsoft.com/v1.0/users/").unwrap();
+    url.path_segments_mut().unwrap().pop_if_empty().extend([address, "calendar", "calendarView"]);
+    url
+}
+
+fn room_next_page(base: &Url, next: &str) -> Result<Url, String> {
+    let url = Url::parse(next).map_err(|_| "회의실 상세의 다음 페이지 주소가 올바르지 않습니다.")?;
+    if url.origin() != base.origin() || url.path() != base.path() || !url.username().is_empty()
+        || url.password().is_some() || url.fragment().is_some() {
+        return Err("회의실 상세의 다음 페이지 주소가 허용되지 않습니다.".into());
+    }
+    Ok(url)
+}
+
+fn room_detail_error(status: u16) -> String {
+    match status {
+        401 => "회의실 상세 인증이 만료되었습니다. 설정에서 Outlook을 다시 연결해 주세요.".into(),
+        403 => "회의실 상세 접근 권한이 없습니다. Calendars.Read.Shared 동의 후 설정에서 Outlook을 다시 연결해 주세요. 재연결 후에도 같으면 회의실 캘린더의 공유 권한을 확인해 주세요.".into(),
+        404 => "회의실 상세 캘린더를 찾을 수 없습니다. 예약 현황만 표시합니다.".into(),
+        429 => "회의실 상세 요청이 일시적으로 제한됐습니다. 다음 새로고침에서 다시 확인합니다.".into(),
+        _ => "회의실 상세를 가져오지 못했습니다. 예약 현황만 표시합니다. 잠시 후 새로고침해 주세요.".into(),
+    }
+}
+
+async fn fetch_room_meetings(client: &reqwest::Client, token: &str, address: &str, start: DateTime<Local>, end: DateTime<Local>) -> Result<Vec<GraphMeeting>, String> {
+    let base = room_view_url(address);
+    let mut url = base.clone();
+    url.query_pairs_mut().extend_pairs([
+        ("startDateTime", start.to_rfc3339()), ("endDateTime", end.to_rfc3339()),
+        ("$top", GRAPH_PAGE_SIZE.into()),
+        ("$select", "subject,bodyPreview,organizer,isCancelled,attendees,start,end".into()),
+    ]);
+    let mut meetings = Vec::new();
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(url.to_string()) || visited.len() > 100 {
+            return Err("회의실 상세 페이지를 모두 읽지 못했습니다. 예약 현황만 표시합니다.".into());
+        }
+        let response = client.get(url).bearer_auth(token).header("Prefer", "outlook.timezone=\"UTC\"")
+            .send().await.map_err(|_| room_detail_error(0))?;
+        if !response.status().is_success() { return Err(room_detail_error(response.status().as_u16())); }
+        let mut page: GraphMeetings = response.json().await.map_err(|_| room_detail_error(0))?;
+        meetings.append(&mut page.value);
+        match page.next_link {
+            Some(next) => url = room_next_page(&base, &next)?,
+            None => return Ok(meetings),
+        }
+    }
+}
+
+fn apply_room_details(bookings: &mut [CalendarEvent], index: usize, addresses: &[String], result: Result<Vec<GraphMeeting>, String>) {
+    let name = room_name(index);
+    for booking in bookings.iter_mut().filter(|booking| booking.calendar_id.as_deref() == Some(&name) && booking.meeting.is_none()) {
+        match &result {
+            Ok(meetings) => {
+                let matches: Vec<_> = meetings.iter().filter(|meeting| !meeting.is_cancelled
+                    && meeting.start.display(false) == booking.start && meeting.end.display(false) == booking.end).collect();
+                // Free/busy has no event ID. Avoid assigning a different event's attendees when times collide.
+                if matches.len() == 1 { booking.meeting = Some(meeting_details(matches[0], addresses)); }
+                else { booking.meeting_notice = Some("이 예약과 일치하는 상세 정보를 확인하지 못했습니다. Outlook에서 확인해 주세요.".into()); }
+            }
+            Err(message) => booking.meeting_notice = Some(message.clone()),
+        }
+    }
+}
+
 /// 회의실을 참석자로 잡은 내 회의를 시간이 같은 회의실 예약에 붙입니다.
 fn attach_meetings(bookings: &mut [CalendarEvent], addresses: &[String], meetings: Vec<GraphMeeting>) {
     for meeting in meetings.into_iter().filter(|meeting| !meeting.is_cancelled) {
@@ -1075,19 +1187,7 @@ fn attach_meetings(bookings: &mut [CalendarEvent], addresses: &[String], meeting
             addresses.iter().position(|room| room.eq_ignore_ascii_case(address))
         };
         let rooms: Vec<String> = meeting.attendees.iter().filter_map(room_of).map(room_name).collect();
-        let details = MeetingDetails {
-            subject: meeting.subject.clone().unwrap_or_else(|| "(제목 없음)".to_string()),
-            summary: meeting_summary(meeting.body_preview.clone()),
-            attendees: meeting
-                .attendees
-                .iter()
-                .filter(|attendee| attendee.kind.as_deref() != Some("resource") && room_of(attendee).is_none())
-                .filter_map(|attendee| {
-                    let email = &attendee.email_address;
-                    email.name.clone().or_else(|| email.address.clone())
-                })
-                .collect(),
-        };
+        let details = meeting_details(&meeting, addresses);
         for booking in bookings.iter_mut().filter(|booking| {
             booking.start == start
                 && booking.end == end
@@ -1110,7 +1210,7 @@ async fn fetch_my_meetings(
             ("startDateTime", start.to_rfc3339()),
             ("endDateTime", end.to_rfc3339()),
             ("$top", GRAPH_PAGE_SIZE.to_string()),
-            ("$select", "subject,bodyPreview,isCancelled,attendees,start,end".to_string()),
+            ("$select", "subject,bodyPreview,organizer,isCancelled,attendees,start,end".to_string()),
         ],
     )
     .await?;
@@ -1125,7 +1225,7 @@ async fn fetch_my_meetings(
 }
 
 /// `from`부터 `to` 전날까지의 회의실 예약을 가져옵니다. 일정 제목은 회의실 공개 범위를 따릅니다.
-/// 다른 사람의 회의 내용은 읽을 수 없어 내가 참석하는 회의에만 내용과 참석자를 붙입니다.
+/// 공유된 회의실 캘린더도 조회하되 상세 접근 실패가 예약 현황을 숨기지 않게 합니다.
 pub async fn fetch_rooms(from: &str, to: &str) -> Result<Vec<CalendarEvent>, String> {
     let addresses = room_addresses();
     if addresses.is_empty() {
@@ -1162,10 +1262,25 @@ pub async fn fetch_rooms(from: &str, to: &str) -> Result<Vec<CalendarEvent>, Str
         .await
         .map_err(|error| format!("회의실 일정 응답 해석 실패: {error}"))?;
     let mut bookings = room_bookings(&addresses, schedules)?;
-    // 회의 내용은 부가 정보라 읽지 못해도 예약 현황은 보여 줍니다.
-    match fetch_my_meetings(&access_token, start, end).await {
-        Ok(meetings) => attach_meetings(&mut bookings, &addresses, meetings),
-        Err(error) => eprintln!("회의 내용 조회 실패: {error}"),
+    // Keep richer personal copies (rooms can strip subjects/bodies), then fill other bookings from shared calendars.
+    if let Ok(meetings) = fetch_my_meetings(&access_token, start, end).await {
+        attach_meetings(&mut bookings, &addresses, meetings);
+    }
+    let client = http_client()?;
+    // Bound concurrent room requests to two and keep each room's failure independent.
+    for chunk in addresses.iter().enumerate().collect::<Vec<_>>().chunks(2) {
+        let tasks: Vec<_> = chunk.iter().map(|(index, address)| {
+            let (index, address) = (*index, (*address).clone());
+            let client = client.clone();
+            let token = access_token.clone();
+            (index, tauri::async_runtime::spawn(async move {
+                fetch_room_meetings(&client, &token, &address, start, end).await
+            }))
+        }).collect();
+        for (index, task) in tasks {
+            let result = task.await.unwrap_or_else(|_| Err(room_detail_error(0)));
+            apply_room_details(&mut bookings, index, &addresses, result);
+        }
     }
     Ok(bookings)
 }
@@ -1451,6 +1566,7 @@ mod tests {
     fn booking_at(room: &str, start: &str, end: &str) -> CalendarEvent {
         CalendarEvent {
             meeting: None,
+            meeting_notice: None,
             id: format!("{room}|{start}"),
             title: "예약자".to_string(),
             start: start.to_string(),
@@ -1513,6 +1629,57 @@ mod tests {
     fn meeting_summary_is_empty_when_only_the_join_notice_remains() {
         assert_eq!(meeting_summary(Some("  \r\n____\r\nTeams".to_string())), None);
         assert_eq!(meeting_summary(None), None);
+    }
+
+    #[test]
+    fn shared_room_details_do_not_require_me_or_the_room_in_attendees() {
+        let addresses = vec!["room@example.com".into()];
+        let meeting: GraphMeeting = serde_json::from_value(serde_json::json!({
+            "subject":"Shared meeting", "bodyPreview":"Shared agenda", "organizer":{"emailAddress":{"name":"Organizer"}},
+            "attendees":[
+                {"type":"required","emailAddress":{"name":"Person A"},"status":{"response":"accepted"}},
+                {"type":"optional","emailAddress":{"name":"","address":"b@example.com"},"status":{"response":"notResponded"}}
+            ],
+            "start":{"dateTime":"2026-11-10T01:00:00"},"end":{"dateTime":"2026-11-10T02:00:00"}
+        })).unwrap();
+        let mut bookings = vec![booking_at("회의실 1", &meeting.start.display(false), &meeting.end.display(false))];
+        apply_room_details(&mut bookings, 0, &addresses, Ok(vec![meeting]));
+        let details = bookings[0].meeting.as_ref().unwrap();
+        assert_eq!(details.organizer.as_deref(), Some("Organizer"));
+        assert_eq!(details.participants.len(), 2);
+        assert_eq!(details.participants[0].response.as_deref(), Some("accepted"));
+        assert_eq!(details.participants[1].name, "b@example.com");
+        assert_eq!(details.participants[1].kind.as_deref(), Some("optional"));
+        // A denied shared calendar must not erase the personal copy or the reservation.
+        apply_room_details(&mut bookings, 0, &addresses, Err(room_detail_error(403)));
+        assert!(bookings[0].meeting.is_some());
+        assert!(bookings[0].meeting_notice.is_none());
+        bookings[0].meeting = None;
+        apply_room_details(&mut bookings, 0, &addresses, Err(room_detail_error(403)));
+        assert!(bookings[0].meeting_notice.as_deref().unwrap().contains("Calendars.Read.Shared"));
+        assert_eq!(bookings.len(), 1);
+    }
+
+    #[test]
+    fn ambiguous_shared_matches_are_not_assigned_and_old_details_still_load() {
+        let item = serde_json::json!({"subject":"Meeting", "start":{"dateTime":"2026-11-10T01:00:00"},"end":{"dateTime":"2026-11-10T02:00:00"}});
+        let meeting: GraphMeeting = serde_json::from_value(item.clone()).unwrap();
+        let mut bookings = vec![booking_at("회의실 1", &meeting.start.display(false), &meeting.end.display(false))];
+        apply_room_details(&mut bookings, 0, &["room@example.com".into()], Ok(vec![meeting, serde_json::from_value(item).unwrap()]));
+        assert!(bookings[0].meeting.is_none());
+        assert!(bookings[0].meeting_notice.is_some());
+        let old: MeetingDetails = serde_json::from_str(r#"{"subject":"Old","summary":null,"attendees":["Person"]}"#).unwrap();
+        assert!(old.organizer.is_none() && old.participants.is_empty());
+    }
+
+    #[test]
+    fn room_paging_stays_on_the_same_graph_calendar() {
+        let base = room_view_url("room+one@example.com");
+        let mut next = base.clone(); next.set_query(Some("$skiptoken=next"));
+        assert!(room_next_page(&base, next.as_str()).is_ok());
+        for invalid in ["https://example.com/page", "https://graph.microsoft.com/v1.0/me/calendarView", "http://graph.microsoft.com/v1.0/users/room/calendarView"] {
+            assert!(room_next_page(&base, invalid).is_err());
+        }
     }
 
     #[test]

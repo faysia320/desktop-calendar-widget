@@ -7,6 +7,7 @@ mod teams;
 mod teams_settings;
 mod teams_read;
 mod link_preview;
+mod appearance;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -842,6 +843,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
                 app.path().app_local_data_dir()?.join(ROOM_CACHE_FILE),
             )));
             app.manage(NewsCache(app.path().app_local_data_dir()?.join(NEWS_CACHE_FILE)));
+            app.manage(appearance::AppearanceStore::new(app.path().app_config_dir()?.join("appearance.json")));
             app.manage(teams::TeamsSession::default());
             app.manage(link_preview::PreviewStore::default());
             app.manage(teams_read::ReadStore::new(app.path().app_config_dir()?.join("teams-read-marks.json")));
@@ -907,6 +909,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             teams_read::teams_mark_read,
             teams_settings::teams_load_channels,
             teams_settings::teams_save_channels,
+            appearance::load_transparency,
+            appearance::save_transparency,
             teams::teams_connect,
             teams::teams_messages,
             teams::teams_members,
