@@ -44,6 +44,13 @@ impl TeamsSession {
 }
 
 #[derive(Serialize)]
+pub struct ReactionUser {
+    id: Option<String>,
+    name: Option<String>,
+    mine: bool,
+}
+
+#[derive(Serialize)]
 pub struct Reaction {
     key: String,
     emoji: String,
@@ -51,6 +58,7 @@ pub struct Reaction {
     count: usize,
     mine: bool,
     reaction_type: Option<String>,
+    users: Vec<ReactionUser>,
 }
 
 fn reactions(value: &Value, user_id: Option<&str>) -> Vec<Reaction> {
@@ -73,12 +81,19 @@ fn reactions(value: &Value, user_id: Option<&str>) -> Vec<Reaction> {
             format!("custom:{}", reaction["reactionContentUrl"].as_str().unwrap_or(label))
         } else { emoji.to_string() };
         let mine = user_id.is_some() && reaction.pointer("/user/user/id").and_then(Value::as_str) == user_id;
+        let user = ReactionUser {
+            id: reaction.pointer("/user/user/id").and_then(Value::as_str).filter(|id| !id.is_empty()).map(str::to_string),
+            name: reaction.pointer("/user/user/displayName").and_then(Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_string),
+            mine,
+        };
         if let Some(existing) = result.iter_mut().find(|item| item.key == key) {
             existing.count += 1;
             existing.mine |= mine;
+            existing.users.push(user);
         } else {
             result.push(Reaction { key, emoji: emoji.into(), label: label.into(), count: 1, mine,
                 reaction_type: (kind != "custom").then(|| emoji.to_string()),
+                users: vec![user],
             });
         }
     }
@@ -99,6 +114,15 @@ pub struct Message {
     reactions: Vec<Reaction>,
     reply_count: Option<usize>,
     other_activity: i64,
+    mentions_me: Vec<crate::teams_notifications::Mention>,
+}
+
+fn direct_mention(value: &Value, user_id: Option<&str>) -> Option<crate::teams_notifications::Mention> {
+    let time = other_activity(value, user_id);
+    if time <= 0 || !value["mentions"].as_array().into_iter().flatten().any(|mention| {
+        mention.pointer("/mentioned/user/id").and_then(Value::as_str) == user_id
+    }) { return None; }
+    Some(crate::teams_notifications::Mention { id: value["id"].as_str()?.to_string(), time })
 }
 
 fn other_activity(value: &Value, user_id: Option<&str>) -> i64 {
@@ -131,6 +155,8 @@ impl Message {
             reply_count: value["replies"].as_array().map(Vec::len),
             other_activity: value["replies"].as_array().into_iter().flatten()
                 .map(|reply| other_activity(reply, user_id)).fold(other_activity(value, user_id), i64::max),
+            mentions_me: std::iter::once(value).chain(value["replies"].as_array().into_iter().flatten())
+                .filter_map(|item| direct_mention(item, user_id)).collect(),
         })
     }
 }
@@ -247,7 +273,10 @@ pub async fn teams_messages(
                     .send().await.map_err(|error| oauth::request_error("Teams 댓글 수 조회", error))?;
                 let page = graph_response(response).await?;
                 let replies = page["value"].as_array().ok_or("Teams 댓글 목록이 올바르지 않습니다.")?;
-                for reply in replies { message.other_activity = message.other_activity.max(other_activity(reply, user_id.as_deref())); }
+                for reply in replies {
+                    message.other_activity = message.other_activity.max(other_activity(reply, user_id.as_deref()));
+                    if let Some(mention) = direct_mention(reply, user_id.as_deref()) { message.mentions_me.push(mention); }
+                }
                 reply_ids.extend(replies.iter().filter_map(|reply| reply["id"].as_str().map(str::to_string)));
                 replies_next = page["@odata.nextLink"].as_str().map(str::to_string);
             }
@@ -437,6 +466,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_mentions_use_identity_and_include_replies_not_deleted_or_self_messages() {
+        let mention = json!({"id":"reply", "createdDateTime":"2026-11-10T01:00:00Z",
+            "from":{"user":{"id":"other"}}, "mentions":[{"mentioned":{"user":{"id":"me"}}}]});
+        let root = json!({"id":"root", "body":{"content":"@me"}, "replies":[mention.clone()]});
+        let parsed = Message::from_graph(&root, Some("me")).unwrap();
+        assert_eq!(parsed.mentions_me.len(), 1);
+        assert_eq!(parsed.mentions_me[0].id, "reply");
+        assert!(direct_mention(&mention, Some("someone-else")).is_none());
+        assert!(direct_mention(&mention, None).is_none());
+        assert!(direct_mention(&root, Some("me")).is_none());
+        let mut deleted = mention.clone(); deleted["deletedDateTime"] = json!("2026-11-10T02:00:00Z");
+        assert!(direct_mention(&deleted, Some("me")).is_none());
+        let mut own = mention; own["from"]["user"]["id"] = json!("me");
+        assert!(direct_mention(&own, Some("me")).is_none());
+    }
+
+    #[test]
     fn unread_activity_uses_others_created_times_including_replies_only() {
         let mut value = json!({"id":"root","createdDateTime":"2026-11-09T00:00:00Z",
             "lastModifiedDateTime":"2026-11-09T02:00:00Z", "from":{"user":{"id":"me"}},
@@ -484,12 +530,16 @@ mod tests {
     #[test]
     fn reaction_owner_is_the_signed_in_user() {
         let value = json!({"reactions": [
-            {"reactionType":"like", "user":{"user":{"id":"someone"}}},
+            {"reactionType":"like", "user":{"user":{"id":"someone", "displayName":"김민수"}}},
             {"reactionType":"👍", "user":{"user":{"id":"me"}}},
             {"reactionType":"heart", "user":{"user":{"id":"someone"}}}
         ]});
         let grouped = reactions(&value, Some("me"));
         assert_eq!(grouped[0].count, 2);
+        assert_eq!(grouped[0].users[0].name.as_deref(), Some("김민수"));
+        assert_eq!(grouped[0].users[1].id.as_deref(), Some("me"));
+        assert!(grouped[0].users[1].mine);
+        assert!(grouped[0].users[1].name.is_none());
         assert!(grouped[0].mine);
         assert_eq!(grouped[0].reaction_type.as_deref(), Some("👍"));
         assert!(!grouped[1].mine);

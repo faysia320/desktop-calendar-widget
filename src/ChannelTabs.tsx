@@ -6,9 +6,10 @@ export const NEWS_TAB_ID = "builtin:geeknews";
 type Drag = { id: string; pointer: number; startX: number; startY: number; x: number; y: number; moving: boolean };
 type Menu = { id: string; name: string; x: number; y: number };
 
-export default function ChannelTabs({ channels, activeId, disabled, unread, onSelect, onReorder, onClose }: {
+export default function ChannelTabs({ channels, activeId, disabled, unread, mentioned, onSelect, onReorder, onClose }: {
   channels: TeamsChannel[]; activeId: string; disabled: boolean;
   unread: (id: string) => boolean;
+  mentioned: (id: string) => boolean;
   onSelect: (id: string) => void;
   onReorder: (channels: TeamsChannel[]) => void;
   onClose: (id: string) => Promise<void>;
@@ -30,32 +31,22 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, onSe
     const bounds = bar.current!.getBoundingClientRect();
     if (current.y < bounds.top - 20 || current.y > bounds.bottom + 20 || current.x < bounds.left - 24 || current.x > bounds.right + 24) return null;
     const remaining = channels.filter(channel => channel.id !== current.id);
-    const index = remaining.findIndex(channel => {
+    const targets = remaining.flatMap((channel, index) => {
       const rect = tab(channel.id)?.getBoundingClientRect();
-      return rect && current.x < rect.left + rect.width / 2;
+      return rect ? [{ index, rect, centerY: rect.top + rect.height / 2 }] : [];
     });
-    return index < 0 ? remaining.length : index;
+    if (!targets.length) return 0;
+    const nearest = targets.reduce((a, b) => Math.abs(a.centerY - current.y) <= Math.abs(b.centerY - current.y) ? a : b);
+    const row = targets.filter(target => Math.abs(target.centerY - nearest.centerY) < 4);
+    return row.find(target => current.x < target.rect.left + target.rect.width / 2)?.index ?? row[row.length - 1].index + 1;
   }
 
   useEffect(() => {
     if (!draggedId) return;
-    let frame: number;
-    const scroll = () => {
-      const current = drag.current, element = bar.current;
-      if (current && element) {
-        const bounds = element.getBoundingClientRect();
-        if (current.y >= bounds.top - 20 && current.y <= bounds.bottom + 20) {
-          const speed = current.x < bounds.left + 32 ? -8 : current.x > bounds.right - 32 ? 8 : 0;
-          if (speed) { element.scrollLeft += speed; setDropIndex(destination(current)); }
-        }
-      }
-      frame = requestAnimationFrame(scroll);
-    };
-    frame = requestAnimationFrame(scroll);
     const escape = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") cancelDrag(); };
     window.addEventListener("keydown", escape);
     window.addEventListener("blur", cancelDrag);
-    return () => { cancelAnimationFrame(frame); window.removeEventListener("keydown", escape); window.removeEventListener("blur", cancelDrag); };
+    return () => { window.removeEventListener("keydown", escape); window.removeEventListener("blur", cancelDrag); };
   }, [draggedId, channels]);
 
   useLayoutEffect(() => {
@@ -144,14 +135,14 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, onSe
         className={`teams-tab${activeId === channel.id ? " active" : ""}${draggedId === channel.id ? " dragging" : ""}${before === channel.id ? " drop-before" : ""}${after === channel.id ? " drop-after" : ""}`}>
         <button role="tab" data-channel-id={channel.id} aria-selected={activeId === channel.id} aria-controls="teams-conversation"
           tabIndex={activeId === channel.id ? 0 : -1} disabled={disabled}
-          title={`${channel.name}${unread(channel.id) ? " · 위젯에서 미확인 메시지 있음" : ""} · 드래그로 순서 이동 · 우클릭으로 닫기`}
-          aria-label={`${channel.name}${unread(channel.id) ? ", 미확인 메시지 있음" : ""}`} aria-haspopup="menu"
+          title={`${channel.name}${mentioned(channel.id) ? " · 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? " · 위젯에서 미확인 메시지 있음" : ""} · 드래그로 순서 이동 · 우클릭으로 닫기`}
+          aria-label={`${channel.name}${mentioned(channel.id) ? ", 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? ", 미확인 메시지 있음" : ""}`} aria-haspopup="menu"
           onClick={event => { if (suppressClick.current && event.detail !== 0) { suppressClick.current = false; return; } onSelect(channel.id); }}
           onKeyDown={event => keyboard(event, index + 1, channel)}
           onPointerDown={event => start(event, channel.id)} onPointerMove={move} onPointerUp={finish}
           onPointerCancel={cancelDrag} onLostPointerCapture={cancelDrag} onDragStart={event => event.preventDefault()}
           onContextMenu={event => { event.preventDefault(); cancelDrag(); if (!disabled) setMenu({ id: channel.id, name: channel.name, x: event.clientX, y: event.clientY }); }}>
-          <span>#</span> {channel.name}{unread(channel.id) && <span className="teams-unread-dot" aria-hidden="true" />}
+          <span>#</span> {channel.name}{mentioned(channel.id) ? <span className="teams-mention-badge" aria-hidden="true">@</span> : unread(channel.id) && <span className="teams-unread-dot" aria-hidden="true" />}
         </button>
       </div>)}
     </div>

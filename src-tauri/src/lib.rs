@@ -6,6 +6,7 @@ mod single_instance;
 mod teams;
 mod teams_settings;
 mod teams_read;
+mod teams_notifications;
 mod link_preview;
 mod appearance;
 
@@ -847,6 +848,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app.manage(teams::TeamsSession::default());
             app.manage(link_preview::PreviewStore::default());
             app.manage(teams_read::ReadStore::new(app.path().app_config_dir()?.join("teams-read-marks.json")));
+            app.manage(teams_notifications::MentionStore::new(app.path().app_config_dir()?.join("teams-mentions.json")));
             app.manage(teams_settings::ChannelStore::new(
                 app.path().app_config_dir()?.join("teams-channels.json"),
             ));
@@ -913,6 +915,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             appearance::save_transparency,
             teams::teams_connect,
             teams::teams_messages,
+            teams_notifications::teams_observe_mentions,
             teams::teams_members,
             teams::teams_send,
             teams::teams_react,

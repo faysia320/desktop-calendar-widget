@@ -792,7 +792,9 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "url",
+ "windows",
  "windows-sys 0.60.2",
+ "winreg",
 ]
 
 [[package]]

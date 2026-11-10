@@ -11,6 +11,7 @@ import TeamsComposer, { ComposerDraft, emptyDraft } from "./TeamsComposer";
 import MessageBody from "./MessageBody";
 import ChannelTabs, { NEWS_TAB_ID } from "./ChannelTabs";
 import { teamsData } from "./teamsData";
+import ReactionButton from "./ReactionButton";
 
 const POLL_INTERVAL = 60_000;
 
@@ -319,13 +320,10 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
             {!message.deleted && message.has_attachments && <button className="teams-link" onClick={() => openInTeams(message.web_url ?? channel.url)}>첨부 파일 · Teams에서 보기 ↗</button>}
             </div>
             {!message.deleted && <div className="teams-reactions" aria-label="메시지 반응" aria-busy={reacting === message.id}>
-              {(message.reactions ?? []).map((reaction) => <button type="button" className="teams-reaction" key={reaction.key}
-                disabled={reacting !== null} aria-pressed={reaction.mine}
-                title={reaction.reaction_type == null ? `${reaction.label} · Teams에서 보기` : `${reaction.label} ${reaction.count}명 · ${reaction.mine ? "내 반응 취소" : "반응 추가"}`}
-                aria-label={`${reaction.label} ${reaction.count}명${reaction.mine ? ", 내 반응" : ""}`}
+              {(message.reactions ?? []).map((reaction) => <ReactionButton key={reaction.key}
+                reaction={reaction} channel={channel} account={account} disabled={reacting !== null}
                 onClick={() => reaction.reaction_type == null ? openInTeams(message.web_url ?? channel.url) : reactTo(message, reaction.reaction_type, reaction.mine)}>
-                <span aria-hidden="true">{reaction.emoji}</span><span aria-hidden="true">{reaction.count}</span>
-              </button>)}
+              </ReactionButton>)}
               <button type="button" className="teams-reaction-add" aria-label="반응 추가" title="반응 추가"
                 aria-expanded={reactionPicker === message.id} disabled={reacting !== null}
                 onClick={() => setReactionPicker((current) => current === message.id ? null : message.id)}>☺ +</button>
@@ -408,7 +406,7 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
     let stopped = false;
     let polling = false;
     const poll = async () => {
-      if (polling || document.hidden) return;
+      if (polling) return;
       polling = true;
       try {
         for (const channel of channels) {
@@ -500,10 +498,11 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
       </div>
     </header>
     <ChannelTabs channels={channels} activeId={active?.id ?? NEWS_TAB_ID} disabled={savingChannels}
-      unread={id => teamsData.unread(id)} onSelect={id => void selectChannel(id)}
+      unread={id => teamsData.unread(id)} mentioned={id => teamsData.mentioned(id)} onSelect={id => void selectChannel(id)}
       onReorder={next => { void saveChannels(next, activeId); }} onClose={removeChannel} />
     {error && <p className="teams-panel-error error" role="alert">{error}</p>}
     {teamsData.error && <div className="teams-error" role="alert"><p>{teamsData.error}</p><button onClick={() => { void teamsData.retryReadState(); }}>확인 상태 다시 불러오기</button></div>}
+    {teamsData.notificationError && <div className="teams-error" role="alert"><p>{teamsData.notificationError}</p></div>}
     {channelError && <div className="teams-error" role="alert"><p>{channelError}</p>
       {!channelsReady && <button onClick={() => setLoadAttempt((attempt) => attempt + 1)}>채널 목록 다시 불러오기</button>}
     </div>}

@@ -45,6 +45,8 @@ windows-sys = { version = "0.60", features = [
 ] }
 roxmltree = "0.21.2"
 scraper = "0.29"
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Win32_Storage_EnhancedStorage", "Win32_Storage_FileSystem"] }
+winreg = "0.56"
 
 
 # Fast repeatable desktop builds. UI assets are embedded, so every UI change

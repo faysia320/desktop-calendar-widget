@@ -19,6 +19,7 @@ export type TeamsMessage = {
   reactions: TeamsReaction[];
   reply_count: number | null;
   other_activity: number;
+  mentions_me?: { id: string; time: number }[];
 };
 
 export type TeamsReaction = {
@@ -28,7 +29,9 @@ export type TeamsReaction = {
   count: number;
   mine: boolean;
   reaction_type: string | null;
+  users?: { id: string | null; name: string | null; mine: boolean }[];
 };
+export type TeamsMember = { userId: string; displayName: string; email: string };
 
 export type MessagePage = { messages: TeamsMessage[]; next: string | null; account_id: string | null };
 export type TeamsStatus = { configured: boolean; connected: boolean };
