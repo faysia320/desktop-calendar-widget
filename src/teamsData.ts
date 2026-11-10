@@ -1,17 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatPage, MessagePage, TeamsChannel, TeamsChat, TeamsMember } from "./teams";
+import type { ActivityItem, ChatPage, MessagePage, TeamsChannel, TeamsChat, TeamsMember } from "./teams";
 
 type Call = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Entry = { page: MessagePage; at: number; bytes: number };
 const TTL = 45_000;
 const LIMIT = 8 * 1024 * 1024;
 const JOINED_TTL = 30 * 60_000;
+const ACTIVITY_LIMIT = 300;
+const ACTIVITY_AGE = 30 * 86_400_000;
+export const ACTIVITY_ID = "builtin:activity";
 
 export function conversationTarget(channel: TeamsChannel) {
   return { teamId: channel.teamId, channelId: channel.channelId, chatId: channel.chatId ?? null };
 }
 
-function plainText(body: string, type: string) {
+export function plainText(body: string, type: string) {
   if (type.toLowerCase() !== "html") return body;
   const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
   return body.replace(/<img\b[^>]*>/gi, "[이미지]").replace(/<br\s*\/?>|<\/(p|div|li)>/gi, "\n").replace(/<[^>]*>/g, "")
@@ -41,6 +44,8 @@ export class TeamsData {
   private memberCache = new Map<string, { until: number; request: Promise<TeamsMember[]> }>();
   private chatsRequest?: Promise<void>;
   private joined?: { until: number; channels: TeamsChannel[] };
+  private feed = new Map<string, ActivityItem>();
+  private feedAccount: string | null = null;
   chats: TeamsChat[] | null = null;
   chatsAccount: string | null = null;
   chatsError = "";
@@ -152,6 +157,41 @@ export class TeamsData {
       this.pages.delete(oldest);
     }
   }
+  // Items are rebuilt from every fresh head page; the read mark is the only persisted state.
+  private ingest(channel: TeamsChannel, page: MessagePage) {
+    const account = page.account_id;
+    if (!account) return;
+    if (this.feedAccount !== account) { this.feed.clear(); this.feedAccount = account; }
+    const roots = new Set(page.messages.map(message => message.id));
+    for (const [key, item] of this.feed) {
+      if (item.conversation.id === channel.id && roots.has(item.parent_id ?? item.message_id)) this.feed.delete(key);
+    }
+    const oldest = this.now() - ACTIVITY_AGE;
+    for (const message of page.messages) {
+      for (const activity of message.activities ?? []) {
+        if (activity.time < oldest) continue;
+        const key = JSON.stringify([channel.id, activity.kind, activity.message_id]);
+        this.feed.set(key, { ...activity, key, conversation: channel });
+      }
+    }
+    if (this.feed.size > ACTIVITY_LIMIT) {
+      [...this.feed.values()].sort((a, b) => b.time - a.time).slice(ACTIVITY_LIMIT).forEach(item => this.feed.delete(item.key));
+    }
+    const mark = this.markKey(account, ACTIVITY_ID);
+    // The first feed for an account starts read, like the channel baselines.
+    if (this.initialized && this.marks[mark] === undefined && !this.markWrites.has(mark)) void this.markRead(ACTIVITY_ID, account, this.now());
+    this.emit();
+  }
+  activities() { return [...this.feed.values()].sort((a, b) => b.time - a.time); }
+  activityAccount() { return this.feedAccount; }
+  activityMark() {
+    if (!this.initialized || !this.feedAccount) return undefined;
+    return this.marks[this.markKey(this.feedAccount, ACTIVITY_ID)];
+  }
+  activityUnread() {
+    const mark = this.activityMark();
+    return mark === undefined ? 0 : [...this.feed.values()].filter(item => item.time > mark).length;
+  }
   chatPreview(chat: TeamsChat) { return chat.last ? plainText(chat.last.body, chat.last.body_type) : ""; }
   chatsUnread() { return (this.chats ?? []).some(chat => this.unread(`chat:${chat.id}`)); }
   refreshChats(): Promise<void> {
@@ -230,6 +270,7 @@ export class TeamsData {
         if (!scan) this.put(key, page);
         this.failures.delete(key);
         if (!parent && !cursor && !scan) this.observe(channel, page);
+        if (!parent && !cursor && epoch === this.epoch) this.ingest(channel, page);
         // Only fresh head pages notify. Cached/paginated history must never replay alerts.
         // Chats notify every new message through refreshChats instead.
         if (!parent && !cursor && !channel.chatId && page.account_id && page.messages.every(message => message.mentions_me !== undefined)) {
@@ -276,6 +317,7 @@ export class TeamsData {
     this.pages.clear(); this.pending.clear(); this.failures.clear(); this.generations.clear();
     this.memberCache.clear(); this.chatsRequest = undefined; this.joined = undefined;
     this.chats = null; this.chatsAccount = null; this.chatsError = ""; this.scanError = "";
+    this.feed.clear(); this.feedAccount = null;
     this.activity.clear(); this.notificationError = ""; this.blockedUntil = 0; this.emit();
   }
 }

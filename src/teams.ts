@@ -36,7 +36,21 @@ export type TeamsMessage = {
   reply_count: number | null;
   other_activity: number;
   mentions_me?: { id: string; time: number }[];
+  activities?: MessageActivity[];
 };
+
+export type MessageActivity = {
+  kind: "mention" | "reply" | "reaction";
+  time: number;
+  actors: { id: string | null; name: string | null }[];
+  emojis: string[];
+  message_id: string;
+  parent_id: string | null;
+  body: string;
+  body_type: string;
+  web_url: string | null;
+};
+export type ActivityItem = MessageActivity & { key: string; conversation: TeamsChannel };
 
 export type TeamsReaction = {
   key: string;

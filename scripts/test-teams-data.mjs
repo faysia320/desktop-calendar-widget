@@ -105,7 +105,10 @@ test('persists read baselines, keeps new arrivals unread during older mark saves
   assert.equal(reopened.unread('a'), true);
   await reopened.markRead('a', 'account-a', 300); assert.equal(reopened.unread('a'), false);
   current = page(400, 'account-b'); reopened.reset(); await reopened.fetch(channel('a')); await tick();
-  assert.equal(reopened.unread('a'), false); assert.equal(Object.keys(disk).length, 2);
+  assert.equal(reopened.unread('a'), false);
+  const keys = Object.keys(disk);
+  assert.equal(keys.filter(key => !key.includes('builtin:activity')).length, 2);
+  assert.equal(keys.length, 4);
 });
 
 test('failed mark writes remain unread and corrupt metadata is never overwritten', async () => {
@@ -185,4 +188,26 @@ test('background scans notify mentions without caching pages or unread state', a
   assert.equal(observed, 1); assert.equal(data.peek(channel('scan')), undefined); assert.equal(data.unread('scan'), false);
   await data.fetch({ ...channel('chat:x'), chatId: 'x' });
   assert.equal(observed, 1);
+});
+
+test('activity feed rebuilds from fresh pages, baselines once and counts newer items', async () => {
+  const marks = {};
+  const act = (kind, id, time, parent = null) => ({ kind, time, actors: [{ id: 'u', name: '동료' }], emojis: [], message_id: id, parent_id: parent, body: '', body_type: 'text', web_url: null });
+  let current = { account_id: 'me', next: null, messages: [{ id: 'root', other_activity: 0, activities: [act('reply', 'r1', 100, 'root')] }] };
+  let now = 1_000;
+  const data = new TeamsData(async (command, args) => {
+    if (command === 'teams_load_read_marks') return {};
+    if (command === 'teams_mark_read') return marks[args.key] = args.timestamp;
+    if (command === 'teams_messages') return structuredClone(current);
+    if (command === 'teams_observe_mentions') return;
+    throw Error(command);
+  }, () => now);
+  await data.initialize(); await data.fetch(channel('a'), null, null, false, true); await tick();
+  assert.equal(data.activities().length, 1); assert.equal(data.activityUnread(), 0);
+  current.messages[0].activities = [act('reaction', 'root', 2_000)];
+  now = 3_000; await data.fetch(channel('a'), null, null, true, true);
+  assert.deepEqual(data.activities().map(item => item.kind), ['reaction']);
+  assert.equal(data.activityUnread(), 1);
+  await data.markRead('builtin:activity', 'me', 2_000); assert.equal(data.activityUnread(), 0);
+  data.reset(); assert.equal(data.activities().length, 0);
 });

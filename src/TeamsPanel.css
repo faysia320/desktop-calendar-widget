@@ -172,6 +172,25 @@
 .teams-chat-title time { flex: none; color: var(--muted); font-size: 10px; }
 .teams-chat-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 11.5px; }
 .teams-chat-item.unread .teams-chat-preview { color: var(--text); }
+.teams-activity-filters { justify-content: flex-start; gap: 6px; padding: 6px 12px; }
+.teams-filter-chip { padding: 3px 11px; border: 1px solid var(--hairline); border-radius: 999px; color: var(--muted); font-size: 11.5px; }
+.teams-filter-chip:hover { background: var(--hover); }
+.teams-filter-chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--selected); }
+.teams-activity-list { display: flex; flex-direction: column; gap: 2px; padding-top: 4px; }
+.teams-activity-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 9px 10px; border-radius: 10px; text-align: left; color: inherit; }
+.teams-activity-item:hover { background: var(--hover); }
+.teams-activity-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.teams-activity-item .teams-avatar { position: relative; flex: none; }
+.teams-activity-item .teams-chat-title strong { white-space: normal; font-weight: 500; }
+.teams-activity-item.unread .teams-chat-title strong { font-weight: 700; }
+.teams-activity-item.unread { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.teams-activity-badge { position: absolute; right: -5px; bottom: -4px; display: grid; place-items: center; min-width: 16px; height: 16px; padding: 0 2px; border-radius: 50%; background: var(--popover); color: #ff8a3d; font-size: 10px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 1.5px var(--hairline); }
+.teams-activity-badge.reply { color: #9d8cff; }
+.teams-activity-text { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; color: var(--muted); font-size: 11.5px; }
+.teams-activity-item.unread .teams-activity-text { color: var(--text); }
+.teams-activity-emojis { font-size: 11px; }
+.teams-activity-location { color: var(--muted); font-size: 10.5px; font-weight: 600; }
+.teams-count-badge { display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin-left: 5px; padding: 0 4px; border-radius: 8px; background: #e5484d; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; opacity: 1 !important; }
 .teams-scan-note { flex: none; margin: 0 12px 4px; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
 .teams-tab-icon { display: inline-flex; vertical-align: -1px; }
 .teams-placeholder { padding: 25px 0; color: var(--muted); font-size: 12px; text-align: center; }

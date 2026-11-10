@@ -3,13 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./icons";
 import { htmlToText } from "./news";
 import {
-  ACTIVE_CHANNEL_KEY, ChannelSettings, TeamsChannel, TeamsChat, TeamsMessage, TeamsReaction, TeamsStatus,
+  ACTIVE_CHANNEL_KEY, ActivityItem, ChannelSettings, TeamsChannel, TeamsChat, TeamsMessage, TeamsReaction, TeamsStatus,
   chatChannel, decodeChannels, parseChannelLink, readChannels,
 } from "./teams";
 import "./TeamsPanel.css";
 import TeamsComposer, { ComposerDraft, emptyDraft } from "./TeamsComposer";
 import MessageBody from "./MessageBody";
-import ChannelTabs, { CHATS_TAB_ID, NEWS_TAB_ID } from "./ChannelTabs";
+import ChannelTabs, { ACTIVITY_TAB_ID, CHATS_TAB_ID, NEWS_TAB_ID } from "./ChannelTabs";
+import ActivityFeed from "./ActivityFeed";
 import { conversationTarget, teamsData } from "./teamsData";
 import ReactionButton from "./ReactionButton";
 
@@ -17,6 +18,9 @@ const POLL_INTERVAL = 60_000;
 const CHAT_POLL_INTERVAL = 60_000;
 // One untabbed channel per step keeps all-channel mention checks under Graph limits.
 const SCAN_INTERVAL = 15_000;
+// Reactions and mentions in chats don't reorder the chat list, so revisit recent chats.
+const CHAT_SCAN_INTERVAL = 5 * 60_000;
+const CHAT_SCAN_LIMIT = 10;
 
 const REACTION_CHOICES = [
   ["👍", "좋아요"], ["❤️", "하트"], ["😆", "웃음"], ["😮", "놀람"],
@@ -90,12 +94,14 @@ function ChatList({ onOpen, onReconnect }: { onOpen: (chat: TeamsChat) => void; 
   </div>;
 }
 
-function Conversation({ channel, draft, onDraftChange, onReconnect, onBack }: {
+function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focusThread }: {
   channel: TeamsChannel;
   draft: ComposerDraft;
   onDraftChange: (value: ComposerDraft, expected?: string) => void;
   onReconnect: () => void;
   onBack?: () => void;
+  // Opens a thread once its root has loaded (from the activity feed).
+  focusThread?: { id: string } | null;
 }) {
   const [messages, setMessages] = useState<TeamsMessage[]>([]);
   const [account, setAccount] = useState<string | null>(null);
@@ -126,6 +132,12 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack }: {
   const loadedOnce = useRef(false);
   const scrollRestore = useRef<{ bottom: boolean; top: number; id?: string; offset?: number } | null>(null);
   const parentId = parent?.id ?? null;
+  const focused = useRef<{ id: string } | null>(null);
+  useEffect(() => {
+    if (!focusThread || focused.current === focusThread) return;
+    const root = messages.find((message) => message.id === focusThread.id);
+    if (root) { focused.current = focusThread; setParent(root); }
+  }, [focusThread, messages]);
   const currentDraft = parentId ? replyDrafts.current[parentId] ?? emptyDraft() : channelDraft.current;
   const changeDraft = (value: ComposerDraft, expected?: string) => {
     if (parentId) {
@@ -422,10 +434,12 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
   const drafts = useRef<Record<string, ComposerDraft>>({});
   const linkInput = useRef<HTMLInputElement>(null);
   const [openChat, setOpenChat] = useState<TeamsChat | null>(null);
+  const [focusThread, setFocusThread] = useState<{ id: string } | null>(null);
   const scanIndex = useRef(0);
   const newsSelected = activeId === NEWS_TAB_ID;
   const chatsSelected = activeId === CHATS_TAB_ID;
-  const active = newsSelected || chatsSelected ? undefined : channels.find((channel) => channel.id === activeId) ?? channels[0];
+  const activitySelected = activeId === ACTIVITY_TAB_ID;
+  const active = newsSelected || chatsSelected || activitySelected ? undefined : channels.find((channel) => channel.id === activeId) ?? channels[0];
   const openChatChannel = openChat && chatChannel(teamsData.chats?.find((chat) => chat.id === openChat.id) ?? openChat);
 
   useEffect(() => {
@@ -441,7 +455,7 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         if (cancelled) return;
         const restored = saved === null ? readChannels() : decodeChannels(saved.channels);
         const selected = saved === null ? localStorage.getItem(ACTIVE_CHANNEL_KEY) ?? "" : saved.activeId;
-        const restoredActive = selected === NEWS_TAB_ID || selected === CHATS_TAB_ID ? selected : restored.find((channel) => channel.id === selected)?.id ?? restored[0]?.id ?? NEWS_TAB_ID;
+        const restoredActive = [NEWS_TAB_ID, CHATS_TAB_ID, ACTIVITY_TAB_ID].includes(selected) ? selected : restored.find((channel) => channel.id === selected)?.id ?? restored[0]?.id ?? NEWS_TAB_ID;
         // Migrate once. Never write an initial empty render over saved settings.
         if (saved === null) await invoke("teams_save_channels", { settings: { channels: restored, activeId: restoredActive } });
         if (cancelled) return;
@@ -481,7 +495,18 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
     // DMs alert on every new message, so poll them even while another tab is open.
     void teamsData.refreshChats();
     const timer = window.setInterval(() => void teamsData.refreshChats(), CHAT_POLL_INTERVAL);
-    return () => window.clearInterval(timer);
+    let stopped = false;
+    const scanChats = async () => {
+      await teamsData.refreshChats();
+      const recent = (teamsData.chats ?? []).filter((chat) => chat.updated > Date.now() - 7 * 86_400_000).slice(0, CHAT_SCAN_LIMIT);
+      for (const chat of recent) {
+        if (stopped) return;
+        try { await teamsData.fetch(chatChannel(chat), null, null, false, true); } catch { /* Shared backoff. */ }
+      }
+    };
+    const initialScan = window.setTimeout(() => void scanChats(), 10_000);
+    const scanTimer = window.setInterval(() => void scanChats(), CHAT_SCAN_INTERVAL);
+    return () => { stopped = true; window.clearInterval(timer); window.clearTimeout(initialScan); window.clearInterval(scanTimer); };
   }, [status?.connected, connecting]);
 
   useEffect(() => {
@@ -521,6 +546,23 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
       channelSavePending.current = false;
       setSavingChannels(false);
     }
+  }
+
+  async function openActivity(item: ActivityItem) {
+    const conversation = item.conversation;
+    if (conversation.chatId) {
+      const chat = teamsData.chats?.find((candidate) => candidate.id === conversation.chatId);
+      if (!await saveChannels(channels, CHATS_TAB_ID)) return;
+      setOpenChat(chat ?? { id: conversation.chatId, name: conversation.name, chat_type: "group", url: conversation.url, updated: 0, last: null });
+      return;
+    }
+    const tab = channels.find((channel) => channel.id.toLowerCase() === conversation.id.toLowerCase());
+    if (!tab) {
+      try { await invoke("teams_open", { url: item.web_url ?? conversation.url }); } catch (reason) { setError(String(reason)); }
+      return;
+    }
+    if (!await saveChannels(channels, tab.id)) return;
+    setFocusThread(item.parent_id ? { id: item.parent_id } : null);
   }
 
   async function selectChannel(id: string) {
@@ -584,8 +626,8 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         <button className="icon-button" data-tooltip="채널 추가" aria-label="채널 추가" disabled={!channelsReady || savingChannels} onClick={showAdd}><Icon name="plus" size={17} /></button>
       </div>
     </header>
-    <ChannelTabs channels={channels} activeId={chatsSelected ? CHATS_TAB_ID : active?.id ?? NEWS_TAB_ID} disabled={savingChannels}
-      chatUnread={teamsData.chatsUnread()}
+    <ChannelTabs channels={channels} activeId={activitySelected ? ACTIVITY_TAB_ID : chatsSelected ? CHATS_TAB_ID : active?.id ?? NEWS_TAB_ID} disabled={savingChannels}
+      chatUnread={teamsData.chatsUnread()} activityUnread={teamsData.activityUnread()}
       unread={id => teamsData.unread(id)} mentioned={id => teamsData.mentioned(id)} onSelect={id => void selectChannel(id)}
       onReorder={next => { void saveChannels(next, activeId); }} onClose={removeChannel} />
     {error && <p className="teams-panel-error error" role="alert">{error}</p>}
@@ -604,7 +646,8 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         onPointerDown={(event) => { void focusInput(event.currentTarget).catch((reason) => setFormError(String(reason))); }} /></label>
       {formError && <p className="error" role="alert">{formError}</p>}
       <div className="teams-add-actions"><button type="button" disabled={savingChannels} onClick={() => setAdding(false)}>취소</button><button className="primary" type="submit" disabled={!link.trim() || savingChannels}>{savingChannels ? "저장 중…" : "탭 추가"}</button></div>
-    </form> : chatsSelected ? (!status?.connected || connecting ? connectPrompt
+    </form> : activitySelected ? (!status?.connected || connecting ? connectPrompt : <ActivityFeed onOpen={(item) => void openActivity(item)} />)
+    : chatsSelected ? (!status?.connected || connecting ? connectPrompt
       : openChatChannel ? <Conversation key={openChatChannel.id} channel={openChatChannel} draft={drafts.current[openChatChannel.id] ?? emptyDraft()}
           onDraftChange={(value, expected) => {
             if (expected === undefined || drafts.current[openChatChannel.id]?.text === expected) drafts.current[openChatChannel.id] = value;
@@ -616,6 +659,6 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
       : <Conversation key={active.id} channel={active} draft={drafts.current[active.id] ?? emptyDraft()}
           onDraftChange={(value, expected) => {
             if (expected === undefined || drafts.current[active.id]?.text === expected) drafts.current[active.id] = value;
-          }} onReconnect={connect} />}
+          }} onReconnect={connect} focusThread={focusThread} />}
   </aside>;
 }

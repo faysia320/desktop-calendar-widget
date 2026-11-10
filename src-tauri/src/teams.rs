@@ -117,6 +117,98 @@ pub struct Message {
     reply_count: Option<usize>,
     other_activity: i64,
     mentions_me: Vec<crate::teams_notifications::Mention>,
+    activities: Vec<Activity>,
+}
+
+#[derive(Serialize)]
+pub struct ActivityActor { id: Option<String>, name: Option<String> }
+
+// Graph exposes no activity feed, so derive Teams-like items from messages we already read.
+#[derive(Serialize)]
+pub struct Activity {
+    kind: &'static str,
+    time: i64,
+    actors: Vec<ActivityActor>,
+    emojis: Vec<String>,
+    message_id: String,
+    // Root of the thread when the item is a reply.
+    parent_id: Option<String>,
+    body: String,
+    body_type: String,
+    web_url: Option<String>,
+}
+
+fn sender(value: &Value) -> ActivityActor {
+    ActivityActor {
+        id: value.pointer("/from/user/id").and_then(Value::as_str).map(str::to_string),
+        name: value.pointer("/from/user/displayName").or_else(|| value.pointer("/from/application/displayName"))
+            .and_then(Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_string),
+    }
+}
+
+fn activity(kind: &'static str, time: i64, actors: Vec<ActivityActor>, emojis: Vec<String>, item: &Value, parent: Option<&str>) -> Activity {
+    Activity {
+        kind, time, actors, emojis,
+        message_id: item["id"].as_str().unwrap_or_default().to_string(),
+        parent_id: parent.map(str::to_string),
+        body: item.pointer("/body/content").and_then(Value::as_str).unwrap_or_default().chars().take(2000).collect(),
+        body_type: item.pointer("/body/contentType").and_then(Value::as_str).unwrap_or("text").to_string(),
+        web_url: item["webUrl"].as_str().map(str::to_string),
+    }
+}
+
+fn reaction_activity(item: &Value, user_id: &str, parent: Option<&str>) -> Option<Activity> {
+    if item.pointer("/from/user/id").and_then(Value::as_str) != Some(user_id) || !item["deletedDateTime"].is_null() { return None; }
+    let mut reactions: Vec<&Value> = item["reactions"].as_array().into_iter().flatten()
+        .filter(|reaction| reaction.pointer("/user/user/id").and_then(Value::as_str).is_some_and(|id| id != user_id)).collect();
+    if reactions.is_empty() { return None; }
+    reactions.sort_by_key(|reaction| std::cmp::Reverse(timestamp(&reaction["createdDateTime"])));
+    let time = timestamp(&reactions[0]["createdDateTime"]);
+    let mut actors: Vec<ActivityActor> = Vec::new();
+    let mut emojis: Vec<String> = Vec::new();
+    for reaction in &reactions {
+        let id = reaction.pointer("/user/user/id").and_then(Value::as_str).map(str::to_string);
+        if !actors.iter().any(|actor| actor.id == id) {
+            let name = reaction.pointer("/user/user/displayName").and_then(Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_string);
+            actors.push(ActivityActor { id, name });
+        }
+        let emoji = reactions_emoji(reaction["reactionType"].as_str().unwrap_or_default());
+        if !emoji.is_empty() && !emojis.contains(&emoji) { emojis.push(emoji); }
+    }
+    (time > 0).then(|| activity("reaction", time, actors, emojis, item, parent))
+}
+
+fn reactions_emoji(kind: &str) -> String {
+    match kind {
+        "like" => "👍", "heart" => "❤️", "laugh" => "😆", "surprised" => "😮", "sad" => "😢", "angry" => "😠", "custom" | "" => "",
+        other => other,
+    }.to_string()
+}
+
+fn activities(value: &Value, user_id: Option<&str>) -> Vec<Activity> {
+    let Some(user_id) = user_id else { return Vec::new() };
+    let mut result = Vec::new();
+    let root_id = value["id"].as_str();
+    if let Some(mention) = direct_mention(value, Some(user_id)) {
+        result.push(activity("mention", mention.time, vec![sender(value)], Vec::new(), value, None));
+    }
+    result.extend(reaction_activity(value, user_id, None));
+    let mut replies: Vec<&Value> = value["replies"].as_array().into_iter().flatten().collect();
+    replies.sort_by_key(|reply| timestamp(&reply["createdDateTime"]));
+    // Like Teams, replies notify once I started or joined the thread.
+    let mut joined = value.pointer("/from/user/id").and_then(Value::as_str) == Some(user_id);
+    for reply in replies {
+        if reply.pointer("/from/user/id").and_then(Value::as_str) == Some(user_id) { joined = true; }
+        if let Some(mention) = direct_mention(reply, Some(user_id)) {
+            result.push(activity("mention", mention.time, vec![sender(reply)], Vec::new(), reply, root_id));
+        } else if joined {
+            let time = other_activity(reply, Some(user_id));
+            if time > 0 { result.push(activity("reply", time, vec![sender(reply)], Vec::new(), reply, root_id)); }
+        }
+        result.extend(reaction_activity(reply, user_id, root_id));
+    }
+    result.retain(|item| !item.message_id.is_empty());
+    result
 }
 
 fn direct_mention(value: &Value, user_id: Option<&str>) -> Option<crate::teams_notifications::Mention> {
@@ -159,6 +251,7 @@ impl Message {
                 .map(|reply| other_activity(reply, user_id)).fold(other_activity(value, user_id), i64::max),
             mentions_me: std::iter::once(value).chain(value["replies"].as_array().into_iter().flatten())
                 .filter_map(|item| direct_mention(item, user_id)).collect(),
+            activities: activities(value, user_id),
         })
     }
 }
@@ -792,6 +885,30 @@ mod tests {
         assert!(message.deleted && message.has_attachments);
         assert!(Message::from_graph(&json!({}), None).is_err());
     }
+    #[test]
+    fn activities_cover_mentions_joined_thread_replies_and_reactions_from_others() {
+        let at = |minute: u32| format!("2026-11-10T01:{minute:02}:00Z");
+        let from = |id: &str| json!({"user":{"id":id,"displayName":id}});
+        let root = json!({"id":"root","createdDateTime":at(0),"from":from("me"),"body":{"contentType":"text","content":"내 글"},
+            "reactions":[{"reactionType":"like","createdDateTime":at(5),"user":{"user":{"id":"a"}}},
+                {"reactionType":"❤️","createdDateTime":at(7),"user":{"user":{"id":"b","displayName":"B"}}},
+                {"reactionType":"like","createdDateTime":at(9),"user":{"user":{"id":"me"}}}],
+            "replies":[
+                {"id":"r1","createdDateTime":at(1),"from":from("other")},
+                {"id":"r2","createdDateTime":at(2),"from":from("other"),"mentions":[{"mentioned":{"user":{"id":"me"}}}]},
+                {"id":"r3","createdDateTime":at(3),"from":from("me")},
+                {"id":"r4","createdDateTime":at(4),"from":from("other"),"deletedDateTime":at(6)}]});
+        let items = activities(&root, Some("me"));
+        let kinds: Vec<(&str, &str)> = items.iter().map(|item| (item.kind, item.message_id.as_str())).collect();
+        assert_eq!(kinds, [("reaction", "root"), ("reply", "r1"), ("mention", "r2")]);
+        assert_eq!(items[0].actors.iter().map(|actor| actor.id.as_deref().unwrap()).collect::<Vec<_>>(), ["b", "a"]);
+        assert_eq!(items[0].emojis, ["❤️", "👍"]);
+        assert_eq!(items[1].parent_id.as_deref(), Some("root"));
+        let other = json!({"id":"x","createdDateTime":at(0),"from":from("other"),"replies":[{"id":"y","createdDateTime":at(1),"from":from("third")}]});
+        assert!(activities(&other, Some("me")).is_empty());
+        assert!(activities(&root, None).is_empty());
+    }
+
     #[test]
     fn chats_use_topic_or_other_members_and_ignore_system_previews() {
         let chat = chat_from_graph(&json!({"id":"19:a@unq.gbl.spaces","chatType":"oneOnOne","webUrl":"https://teams.microsoft.com/l/chat/x",
