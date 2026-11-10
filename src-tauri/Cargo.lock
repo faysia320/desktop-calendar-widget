@@ -778,6 +778,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "keyring",
+ "percent-encoding",
  "rand",
  "reqwest 0.12.28",
  "roxmltree",

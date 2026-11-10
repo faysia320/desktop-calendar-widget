@@ -29,6 +29,7 @@ base64 = "0.22"
 chrono = "0.4"
 dotenvy = "0.15"
 keyring = { version = "3", features = ["windows-native"] }
+percent-encoding = "2"
 rand = "0.9"
 reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"

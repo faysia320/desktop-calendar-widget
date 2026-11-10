@@ -143,3 +143,46 @@ test('cache evicts least recently used pages under byte and page budgets', async
   await data.fetch(channel('large-a')); await data.fetch(channel('large-b')); await data.fetch(channel('large-c'));
   assert.equal(data.peek(channel('large-a')), undefined); assert(data.peek(channel('large-c')));
 });
+
+test('chats baseline unread state and send only others\' latest messages as notices', async () => {
+  const marks = {}, notices = [];
+  let chats = [
+    { id: 'c1', name: '상대', chat_type: 'oneOnOne', url: 'https://teams.microsoft.com/l/chat/c1', updated: 100,
+      last: { id: 'm1', time: 100, author: '상대', body: '<p>안녕 &amp; <img alt="x"></p>', body_type: 'html', mine: false } },
+    { id: 'c2', name: '내 글', chat_type: 'group', url: 'https://teams.microsoft.com/l/chat/c2', updated: 90,
+      last: { id: 'm2', time: 90, author: '나', body: 'hi', body_type: 'text', mine: true } },
+  ];
+  const data = new TeamsData(async (command, args) => {
+    if (command === 'teams_load_read_marks') return {};
+    if (command === 'teams_mark_read') return marks[args.key] = args.timestamp;
+    if (command === 'teams_chats') return { chats: structuredClone(chats), account_id: 'me' };
+    if (command === 'teams_observe_chats') { notices.push(args.chats); return; }
+    throw Error(command);
+  });
+  await data.initialize(); await data.refreshChats(); await tick();
+  assert.deepEqual(notices[0].map(notice => notice.id), ['m1']);
+  assert.equal(notices[0][0].text, '안녕 & [이미지]');
+  assert.equal(data.chatsUnread(), false);
+  chats[0] = { ...chats[0], last: { ...chats[0].last, id: 'm3', time: 300 } };
+  await data.refreshChats();
+  assert.equal(data.unread('chat:c1'), true); assert.equal(data.chatsUnread(), true);
+  await data.markRead('chat:c1', 'me', 300);
+  assert.equal(data.chatsUnread(), false);
+});
+
+test('background scans notify mentions without caching pages or unread state', async () => {
+  let observed = 0;
+  const current = page(300);
+  current.messages[0].mentions_me = [];
+  const data = new TeamsData(async command => {
+    if (command === 'teams_load_read_marks') return {};
+    if (command === 'teams_observe_mentions') { observed++; return; }
+    if (command === 'teams_messages') return structuredClone(current);
+    throw Error(command);
+  });
+  await data.initialize();
+  await data.fetch(channel('scan'), null, null, false, true);
+  assert.equal(observed, 1); assert.equal(data.peek(channel('scan')), undefined); assert.equal(data.unread('scan'), false);
+  await data.fetch({ ...channel('chat:x'), chatId: 'x' });
+  assert.equal(observed, 1);
+});

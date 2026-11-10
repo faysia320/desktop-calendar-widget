@@ -3,17 +3,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./icons";
 import { htmlToText } from "./news";
 import {
-  ACTIVE_CHANNEL_KEY, ChannelSettings, TeamsChannel, TeamsMessage, TeamsReaction, TeamsStatus,
-  decodeChannels, parseChannelLink, readChannels,
+  ACTIVE_CHANNEL_KEY, ChannelSettings, TeamsChannel, TeamsChat, TeamsMessage, TeamsReaction, TeamsStatus,
+  chatChannel, decodeChannels, parseChannelLink, readChannels,
 } from "./teams";
 import "./TeamsPanel.css";
 import TeamsComposer, { ComposerDraft, emptyDraft } from "./TeamsComposer";
 import MessageBody from "./MessageBody";
-import ChannelTabs, { NEWS_TAB_ID } from "./ChannelTabs";
-import { teamsData } from "./teamsData";
+import ChannelTabs, { CHATS_TAB_ID, NEWS_TAB_ID } from "./ChannelTabs";
+import { conversationTarget, teamsData } from "./teamsData";
 import ReactionButton from "./ReactionButton";
 
 const POLL_INTERVAL = 60_000;
+const CHAT_POLL_INTERVAL = 60_000;
+// One untabbed channel per step keeps all-channel mention checks under Graph limits.
+const SCAN_INTERVAL = 15_000;
 
 const REACTION_CHOICES = [
   ["👍", "좋아요"], ["❤️", "하트"], ["😆", "웃음"], ["😮", "놀람"],
@@ -42,11 +45,57 @@ async function focusInput(element?: HTMLElement) {
   if (!document.hasFocus()) await invoke("focus_widget_input");
 }
 
-function Conversation({ channel, draft, onDraftChange, onReconnect }: {
+function chatTime(value: number) {
+  const date = new Date(value);
+  return date.toDateString() === new Date().toDateString()
+    ? date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
+}
+
+function ChatList({ onOpen, onReconnect }: { onOpen: (chat: TeamsChat) => void; onReconnect: () => void }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const chats = teamsData.chats;
+  async function refresh() {
+    setRefreshing(true);
+    try { await teamsData.refreshChats(); } finally { setRefreshing(false); }
+  }
+  return <div className="teams-conversation" role="tabpanel" id="teams-chats-view" aria-labelledby="chats-tab">
+    <div className="teams-conversation-bar"><span className="muted">DM · 그룹 채팅 · 1분마다 갱신</span>
+      <div className="teams-actions">
+        <button className={refreshing ? "icon-button spinning" : "icon-button"} aria-label="채팅 목록 새로고침" data-tooltip="채팅 목록 새로고침"
+          disabled={refreshing} onClick={() => void refresh()}><Icon name="refresh" size={14} /></button>
+      </div>
+    </div>
+    {teamsData.chatsError && <div className="teams-error" role="alert"><p>{teamsData.chatsError}</p>
+      <button onClick={() => void refresh()}>다시 시도</button><button onClick={onReconnect}>Teams 다시 연결</button></div>}
+    {teamsData.scanError && <p className="teams-scan-note">다른 채널의 멘션 알림을 확인하지 못했습니다. {teamsData.scanError}</p>}
+    <div className="teams-messages teams-chat-list">
+      {chats === null ? !teamsData.chatsError && <p className="teams-placeholder">채팅을 불러오는 중…</p>
+        : chats.length === 0 ? <p className="teams-placeholder">채팅이 없습니다.</p>
+        : chats.map((chat) => {
+          const unread = teamsData.unread(`chat:${chat.id}`);
+          const preview = chat.last ? `${chat.last.mine ? "나" : chat.last.author}: ${teamsData.chatPreview(chat)}` : "";
+          return <button key={chat.id} className={`teams-chat-item${unread ? " unread" : ""}`} onClick={() => onOpen(chat)}
+            aria-label={`${chat.name}${unread ? ", 미확인 메시지 있음" : ""}${preview ? `, ${preview}` : ""}`}>
+            <span className="teams-avatar" aria-hidden="true">{chat.name.slice(0, 1)}</span>
+            <span className="teams-chat-copy">
+              <span className="teams-chat-title"><strong>{chat.name}</strong>
+                {chat.last && <time dateTime={new Date(chat.last.time).toISOString()}>{chatTime(chat.last.time)}</time>}</span>
+              <span className="teams-chat-preview">{preview || (chat.chat_type === "meeting" ? "모임 채팅" : "메시지 없음")}</span>
+            </span>
+            {unread && <span className="teams-unread-dot" aria-hidden="true" />}
+          </button>;
+        })}
+    </div>
+  </div>;
+}
+
+function Conversation({ channel, draft, onDraftChange, onReconnect, onBack }: {
   channel: TeamsChannel;
   draft: ComposerDraft;
   onDraftChange: (value: ComposerDraft, expected?: string) => void;
   onReconnect: () => void;
+  onBack?: () => void;
 }) {
   const [messages, setMessages] = useState<TeamsMessage[]>([]);
   const [account, setAccount] = useState<string | null>(null);
@@ -172,7 +221,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
         setLoading(false);
       }
     }
-  }, [channel.id, channel.teamId, channel.channelId, parentId]);
+  }, [channel.id, channel.teamId, channel.channelId, channel.chatId, parentId]);
 
   useEffect(() => {
     version.current++;
@@ -226,7 +275,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
     const request = version.current;
     try {
       const sent = await invoke<TeamsMessage>("teams_send", {
-        teamId: channel.teamId, channelId: channel.channelId, parentId, content: snapshot.text, mentions: snapshot.mentions,
+        ...conversationTarget(channel), parentId, content: snapshot.text, mentions: snapshot.mentions,
       });
       teamsData.mutate(channel, parentId);
       if (parentId) teamsData.mutate(channel, null);
@@ -263,8 +312,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
     const request = version.current;
     try {
       const reactions = await invoke<TeamsReaction[]>("teams_react", {
-        teamId: channel.teamId, channelId: channel.channelId,
-        messageId: message.id, parentId, reactionType: emoji, remove,
+        ...conversationTarget(channel), messageId: message.id, parentId, reactionType: emoji, remove,
       });
       teamsData.mutate(channel, parentId);
       if (request !== version.current) return;
@@ -290,7 +338,8 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
       <div className="teams-conversation-bar">
         {parent ? <button className="teams-back" onClick={() => setParent(null)} disabled={sending || reacting !== null}>
           <Icon name="chevronLeft" size={14} /> 채널
-        </button> : <span className="muted">{synced ? `${synced} 갱신 · 1분마다` : "채널 대화"}</span>}
+        </button> : <>{onBack && <button className="teams-back" onClick={onBack}><Icon name="chevronLeft" size={14} /> 채팅 목록</button>}
+          <span className="muted">{synced ? `${synced} 갱신 · 1분마다` : channel.chatId ? "채팅" : "채널 대화"}</span></>}
         <div className="teams-actions">
           <button className="teams-link" onClick={() => openInTeams(parent?.web_url ?? channel.url)}>Teams에서 열기 ↗</button>
           <button className={loading ? "icon-button spinning" : "icon-button"} aria-label="대화 새로고침"
@@ -316,7 +365,8 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
             <header><strong>{message.author}</strong><time dateTime={message.created_at}>{messageTime(message.created_at)}</time></header>
             <div className="teams-message-bubble">
             {!message.deleted && message.subject && <h3>{message.subject}</h3>}
-            <MessageBody body={message.body} bodyType={message.body_type} deleted={message.deleted} />
+            <MessageBody body={message.body} bodyType={message.body_type} deleted={message.deleted}
+              teamId={channel.teamId} channelId={channel.channelId} chatId={channel.chatId ?? null} />
             {!message.deleted && message.has_attachments && <button className="teams-link" onClick={() => openInTeams(message.web_url ?? channel.url)}>첨부 파일 · Teams에서 보기 ↗</button>}
             </div>
             {!message.deleted && <div className="teams-reactions" aria-label="메시지 반응" aria-busy={reacting === message.id}>
@@ -338,7 +388,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
                 <button type="button" className="teams-picker-close" aria-label="반응 선택 닫기" onClick={() => setReactionPicker(null)}>×</button>
               </div>}
             </div>}
-            {!parent && !message.deleted && <button className="teams-reply" disabled={sending || reacting !== null} onClick={() => setParent(message)}>
+            {!parent && !channel.chatId && !message.deleted && <button className="teams-reply" disabled={sending || reacting !== null} onClick={() => setParent(message)}>
               {message.reply_count == null ? "댓글 보기 / 작성" : `댓글 ${message.reply_count}개 · 보기 / 작성`}
             </button>}
           </div>
@@ -371,8 +421,12 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
   const [formError, setFormError] = useState("");
   const drafts = useRef<Record<string, ComposerDraft>>({});
   const linkInput = useRef<HTMLInputElement>(null);
+  const [openChat, setOpenChat] = useState<TeamsChat | null>(null);
+  const scanIndex = useRef(0);
   const newsSelected = activeId === NEWS_TAB_ID;
-  const active = newsSelected ? undefined : channels.find((channel) => channel.id === activeId) ?? channels[0];
+  const chatsSelected = activeId === CHATS_TAB_ID;
+  const active = newsSelected || chatsSelected ? undefined : channels.find((channel) => channel.id === activeId) ?? channels[0];
+  const openChatChannel = openChat && chatChannel(teamsData.chats?.find((chat) => chat.id === openChat.id) ?? openChat);
 
   useEffect(() => {
     invoke<TeamsStatus>("teams_status").then(setStatus).catch((reason) => setError(String(reason)));
@@ -387,7 +441,7 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         if (cancelled) return;
         const restored = saved === null ? readChannels() : decodeChannels(saved.channels);
         const selected = saved === null ? localStorage.getItem(ACTIVE_CHANNEL_KEY) ?? "" : saved.activeId;
-        const restoredActive = selected === NEWS_TAB_ID ? NEWS_TAB_ID : restored.find((channel) => channel.id === selected)?.id ?? restored[0]?.id ?? NEWS_TAB_ID;
+        const restoredActive = selected === NEWS_TAB_ID || selected === CHATS_TAB_ID ? selected : restored.find((channel) => channel.id === selected)?.id ?? restored[0]?.id ?? NEWS_TAB_ID;
         // Migrate once. Never write an initial empty render over saved settings.
         if (saved === null) await invoke("teams_save_channels", { settings: { channels: restored, activeId: restoredActive } });
         if (cancelled) return;
@@ -422,6 +476,34 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
     return () => { stopped = true; window.clearTimeout(initial); window.clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
   }, [channels, active?.id, channelsReady, status?.connected, connecting]);
 
+  useEffect(() => {
+    if (!status?.connected || connecting) return;
+    // DMs alert on every new message, so poll them even while another tab is open.
+    void teamsData.refreshChats();
+    const timer = window.setInterval(() => void teamsData.refreshChats(), CHAT_POLL_INTERVAL);
+    return () => window.clearInterval(timer);
+  }, [status?.connected, connecting]);
+
+  useEffect(() => {
+    if (!channelsReady || !status?.connected || connecting) return;
+    let stopped = false;
+    let busy = false;
+    const tabs = new Set(channels.map((channel) => channel.id.toLowerCase()));
+    const step = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const untabbed = (await teamsData.joinedChannels()).filter((channel) => !tabs.has(channel.id.toLowerCase()));
+        if (stopped || untabbed.length === 0) return;
+        const channel = untabbed[scanIndex.current++ % untabbed.length];
+        try { await teamsData.fetch(channel, null, null, false, true); } catch { /* Shared backoff; the next step tries another channel. */ }
+      } finally { busy = false; }
+    };
+    const initial = window.setTimeout(() => void step(), 5000);
+    const timer = window.setInterval(() => void step(), SCAN_INTERVAL);
+    return () => { stopped = true; window.clearTimeout(initial); window.clearInterval(timer); };
+  }, [channels, channelsReady, status?.connected, connecting]);
+
   async function saveChannels(nextChannels: TeamsChannel[], nextActiveId: string) {
     if (!channelsReady || channelSavePending.current) return false;
     channelSavePending.current = true;
@@ -455,6 +537,7 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
       await invoke("teams_connect");
       teamsData.reset();
       drafts.current = {};
+      setOpenChat(null);
       setStatus(await invoke<TeamsStatus>("teams_status"));
     } catch (reason) { setError(String(reason)); }
     finally { setConnecting(false); }
@@ -487,6 +570,10 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
     await saveChannels(remaining, nextActive);
   }
 
+  const connectPrompt = <div className="teams-empty"><h3>{connecting ? "브라우저에서 로그인해 주세요" : "Teams 연결이 필요합니다"}</h3>
+    <p>{status?.configured ? "회사 계정으로 로그인해 채널 대화를 불러오세요. 처음 연결할 때 관리자 동의가 필요할 수 있습니다." : "앱의 Microsoft 계정 설정이 필요합니다. README의 Teams 연결 안내를 확인해 주세요."}</p>
+    <button className="primary" disabled={!status?.configured || connecting} onClick={connect}>{connecting ? "로그인 기다리는 중…" : "Teams 연결"}</button></div>;
+
   return <aside className="teams-panel" aria-label="Teams 채널 대화">
     <header className="teams-header"><div className="teams-heading"><span className="teams-mark" aria-hidden="true">T</span><h2>Teams</h2></div>
       <div className="teams-actions">
@@ -497,7 +584,8 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         <button className="icon-button" data-tooltip="채널 추가" aria-label="채널 추가" disabled={!channelsReady || savingChannels} onClick={showAdd}><Icon name="plus" size={17} /></button>
       </div>
     </header>
-    <ChannelTabs channels={channels} activeId={active?.id ?? NEWS_TAB_ID} disabled={savingChannels}
+    <ChannelTabs channels={channels} activeId={chatsSelected ? CHATS_TAB_ID : active?.id ?? NEWS_TAB_ID} disabled={savingChannels}
+      chatUnread={teamsData.chatsUnread()}
       unread={id => teamsData.unread(id)} mentioned={id => teamsData.mentioned(id)} onSelect={id => void selectChannel(id)}
       onReorder={next => { void saveChannels(next, activeId); }} onClose={removeChannel} />
     {error && <p className="teams-panel-error error" role="alert">{error}</p>}
@@ -516,11 +604,15 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
         onPointerDown={(event) => { void focusInput(event.currentTarget).catch((reason) => setFormError(String(reason))); }} /></label>
       {formError && <p className="error" role="alert">{formError}</p>}
       <div className="teams-add-actions"><button type="button" disabled={savingChannels} onClick={() => setAdding(false)}>취소</button><button className="primary" type="submit" disabled={!link.trim() || savingChannels}>{savingChannels ? "저장 중…" : "탭 추가"}</button></div>
-    </form> : !active ? <div className="teams-empty"><div className="teams-empty-icon" aria-hidden="true">#</div><h3>자주 보는 채널을 한곳에</h3>
+    </form> : chatsSelected ? (!status?.connected || connecting ? connectPrompt
+      : openChatChannel ? <Conversation key={openChatChannel.id} channel={openChatChannel} draft={drafts.current[openChatChannel.id] ?? emptyDraft()}
+          onDraftChange={(value, expected) => {
+            if (expected === undefined || drafts.current[openChatChannel.id]?.text === expected) drafts.current[openChatChannel.id] = value;
+          }} onReconnect={connect} onBack={() => setOpenChat(null)} />
+      : <ChatList onOpen={setOpenChat} onReconnect={connect} />)
+    : !active ? <div className="teams-empty"><div className="teams-empty-icon" aria-hidden="true">#</div><h3>자주 보는 채널을 한곳에</h3>
       <p>채널을 탭으로 추가하고<br />일정 옆에서 대화를 확인하세요.</p><button className="primary" onClick={showAdd}><Icon name="plus" size={15} /> 채널 추가</button></div>
-      : !status?.connected || connecting ? <div className="teams-empty"><h3>{connecting ? "브라우저에서 로그인해 주세요" : "Teams 연결이 필요합니다"}</h3>
-        <p>{status?.configured ? "회사 계정으로 로그인해 채널 대화를 불러오세요. 처음 연결할 때 관리자 동의가 필요할 수 있습니다." : "앱의 Microsoft 계정 설정이 필요합니다. README의 Teams 연결 안내를 확인해 주세요."}</p>
-        <button className="primary" disabled={!status?.configured || connecting} onClick={connect}>{connecting ? "로그인 기다리는 중…" : "Teams 연결"}</button></div>
+      : !status?.connected || connecting ? connectPrompt
       : <Conversation key={active.id} channel={active} draft={drafts.current[active.id] ?? emptyDraft()}
           onDraftChange={(value, expected) => {
             if (expected === undefined || drafts.current[active.id]?.text === expected) drafts.current[active.id] = value;

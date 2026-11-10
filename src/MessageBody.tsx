@@ -1,8 +1,9 @@
 import { createElement, memo, useCallback, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import LinkPreview from "./LinkPreview";
+import HostedImage from "./HostedImage";
 
-type Content = { tag: string; text?: string; url?: string; children?: Content[]; style?: CSSProperties; span?: { colSpan?: number; rowSpan?: number }; start?: number };
+type Content = { tag: string; text?: string; url?: string; children?: Content[]; style?: CSSProperties; span?: { colSpan?: number; rowSpan?: number }; start?: number; size?: { width: number; height: number } };
 type Link = { url: string; label: string };
 
 export function safeMessageUrl(value: string): string | null {
@@ -53,6 +54,14 @@ export function parseMessageBody(body: string, html: boolean): { content: Conten
     if (!(node instanceof HTMLElement)) return [];
     const tag = node.tagName.toLowerCase();
     if (skipped.has(tag)) return [];
+    if (tag === "img") {
+      const src = node.getAttribute("src") ?? "";
+      if (/^https:\/\/graph\.microsoft\.com\/(v1\.0|beta)\/(teams|chats)\/[^?#]+\/hostedContents\/[^/?#]+\/\$value$/.test(src)) {
+        const [width, height] = (["width", "height"] as const).map(key => Number(node.getAttribute(key)) || parseFloat(node.style[key]));
+        const size = width > 0 && height > 0 && width <= 10_000 && height <= 10_000 ? { width, height } : undefined;
+        return [{ tag: "image", url: src, text: node.getAttribute("alt") ?? "", size }];
+      }
+    }
     if (tag === "img") return node.getAttribute("alt") ? [{ tag: "span", children: [{ tag: "text", text: `[${node.getAttribute("alt")}]` }] }] : [];
     if (tag === "at") return [{ tag: "mention", text: node.textContent ?? "" }];
     if (tag === "a") {
@@ -86,11 +95,14 @@ export function parseMessageBody(body: string, html: boolean): { content: Conten
   return { content, links: [...links.values()].slice(0, 2) };
 }
 
-function renderContent(content: Content[], onOpen: (url: string) => void): ReactNode[] {
+type Channel = { teamId: string; channelId: string; chatId: string | null };
+
+function renderContent(content: Content[], onOpen: (url: string) => void, channel: Channel): ReactNode[] {
   return content.map((part, index) => {
     if (part.tag === "text") return part.text;
     if (part.tag === "mention") return <span className="teams-inline-mention" key={index}>{part.text}</span>;
-    const children = renderContent(part.children ?? [], onOpen);
+    if (part.tag === "image") return <HostedImage key={index} {...channel} url={part.url!} alt={part.text ?? ""} {...part.size} />;
+    const children = renderContent(part.children ?? [], onOpen, channel);
     if (part.tag === "a") return <a key={index} href={part.url} data-tooltip={part.url} target="_blank" rel="noopener noreferrer"
       onClick={event => { event.preventDefault(); onOpen(part.url!); }}
       onAuxClick={event => { event.preventDefault(); if (event.button === 1) onOpen(part.url!); }}
@@ -101,13 +113,14 @@ function renderContent(content: Content[], onOpen: (url: string) => void): React
   });
 }
 
-export default memo(function MessageBody({ body, bodyType, deleted }: { body: string; bodyType: string; deleted: boolean }) {
+export default memo(function MessageBody({ body, bodyType, deleted, teamId, channelId, chatId }:
+  { body: string; bodyType: string; deleted: boolean; teamId: string; channelId: string; chatId: string | null }) {
   const parsed = useMemo(() => parseMessageBody(deleted ? "" : body, bodyType.toLowerCase() === "html"), [body, bodyType, deleted]);
   const [error, setError] = useState("");
   const open = useCallback((url: string) => {
     setError(""); void invoke("teams_open_message_url", { url }).catch(reason => setError(String(reason)));
   }, []);
-  const content = useMemo(() => renderContent(parsed.content, open), [parsed, open]);
+  const content = useMemo(() => renderContent(parsed.content, open, { teamId, channelId, chatId }), [parsed, open, teamId, channelId, chatId]);
   if (deleted) return <p className="muted">삭제된 메시지입니다.</p>;
   return <><div className={`teams-message-body${bodyType.toLowerCase() === "html" ? "" : " plain-text"}`}>{content}</div>
     {parsed.links.length > 0 && <div className="teams-message-previews">{parsed.links.map(link => <LinkPreview key={link.url} {...link} onOpen={open} />)}</div>}

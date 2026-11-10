@@ -4,7 +4,23 @@ export type TeamsChannel = {
   channelId: string;
   name: string;
   url: string;
+  // Set for DMs and group chats, which have no team, channel or reply threads.
+  chatId?: string;
 };
+
+export type TeamsChat = {
+  id: string;
+  name: string;
+  chat_type: string;
+  url: string | null;
+  updated: number;
+  last: { id: string; time: number; author: string; body: string; body_type: string; mine: boolean } | null;
+};
+export type ChatPage = { chats: TeamsChat[]; account_id: string | null };
+
+export function chatChannel(chat: TeamsChat): TeamsChannel {
+  return { id: `chat:${chat.id}`, teamId: "", channelId: "", chatId: chat.id, name: chat.name, url: chat.url ?? "https://teams.microsoft.com/" };
+}
 
 export type TeamsMessage = {
   id: string;

@@ -1,10 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { MessagePage, TeamsChannel, TeamsMember } from "./teams";
+import type { ChatPage, MessagePage, TeamsChannel, TeamsChat, TeamsMember } from "./teams";
 
 type Call = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Entry = { page: MessagePage; at: number; bytes: number };
 const TTL = 45_000;
 const LIMIT = 8 * 1024 * 1024;
+const JOINED_TTL = 30 * 60_000;
+
+export function conversationTarget(channel: TeamsChannel) {
+  return { teamId: channel.teamId, channelId: channel.channelId, chatId: channel.chatId ?? null };
+}
+
+function plainText(body: string, type: string) {
+  if (type.toLowerCase() !== "html") return body;
+  const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+  return body.replace(/<img\b[^>]*>/gi, "[이미지]").replace(/<br\s*\/?>|<\/(p|div|li)>/gi, "\n").replace(/<[^>]*>/g, "")
+    .replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+      if (code[0] !== "#") return named[code.toLowerCase()] ?? entity;
+      const point = Number(code[1].toLowerCase() === "x" ? `0${code.slice(1)}` : code.slice(1));
+      return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : " ";
+    }).trim();
+}
 
 // One owner for pages, request deduplication, throttling and account-scoped read metadata.
 export class TeamsData {
@@ -23,6 +39,12 @@ export class TeamsData {
   private initializing?: Promise<void>;
   private blockedUntil = 0;
   private memberCache = new Map<string, { until: number; request: Promise<TeamsMember[]> }>();
+  private chatsRequest?: Promise<void>;
+  private joined?: { until: number; channels: TeamsChannel[] };
+  chats: TeamsChat[] | null = null;
+  chatsAccount: string | null = null;
+  chatsError = "";
+  scanError = "";
   error = "";
   notificationError = "";
   revision = 0;
@@ -34,7 +56,7 @@ export class TeamsData {
     if (cached && cached.until > this.now()) return cached.request;
     const epoch = this.epoch;
     const entry = { until: Infinity, request: Promise.resolve([] as TeamsMember[]) };
-    entry.request = this.call<TeamsMember[]>("teams_members", { teamId: channel.teamId, channelId: channel.channelId })
+    entry.request = this.call<TeamsMember[]>("teams_members", conversationTarget(channel))
       .then(members => {
         if (epoch !== this.epoch) throw new Error("Teams 연결이 변경되었습니다.");
         entry.until = this.now() + 300_000;
@@ -130,7 +152,58 @@ export class TeamsData {
       this.pages.delete(oldest);
     }
   }
-  async fetch(channel: TeamsChannel, parent: string | null = null, cursor: string | null = null, force = false): Promise<MessagePage> {
+  chatPreview(chat: TeamsChat) { return chat.last ? plainText(chat.last.body, chat.last.body_type) : ""; }
+  chatsUnread() { return (this.chats ?? []).some(chat => this.unread(`chat:${chat.id}`)); }
+  refreshChats(): Promise<void> {
+    if (this.chatsRequest) return this.chatsRequest;
+    const epoch = this.epoch;
+    this.chatsRequest = (async () => {
+      try {
+        const page = await this.call<ChatPage>("teams_chats");
+        if (epoch !== this.epoch) return;
+        this.chats = page.chats; this.chatsAccount = page.account_id; this.chatsError = "";
+        if (!page.account_id) return;
+        for (const chat of page.chats) {
+          const id = `chat:${chat.id}`;
+          const previous = this.activity.get(id);
+          const time = Math.max(previous?.account === page.account_id ? previous.time : 0, chat.last && !chat.last.mine ? chat.last.time : 0);
+          const value = { account: page.account_id, time, mention: previous?.account === page.account_id ? previous.mention : 0 };
+          this.activity.set(id, value);
+          if (time > 0) this.baseline(id, value);
+        }
+        const notices = page.chats.flatMap(chat => chat.last && !chat.last.mine && chat.url ? [{
+          id: chat.last.id, time: chat.last.time, name: chat.name.slice(0, 200), author: chat.last.author,
+          text: this.chatPreview(chat).slice(0, 500), url: chat.url }] : []);
+        try {
+          await this.call("teams_observe_chats", { account: page.account_id, chats: notices });
+          if (epoch === this.epoch) this.notificationError = "";
+        } catch (error) { if (epoch === this.epoch) this.notificationError = String(error); }
+      } catch (error) {
+        if (epoch === this.epoch) this.chatsError = String(error);
+      } finally {
+        if (epoch === this.epoch) { this.chatsRequest = undefined; this.emit(); }
+      }
+    })();
+    return this.chatsRequest;
+  }
+  // All channels the account can read, for mention alerts outside the widget's tabs.
+  async joinedChannels(): Promise<TeamsChannel[]> {
+    if (this.joined && this.joined.until > this.now()) return this.joined.channels;
+    const epoch = this.epoch;
+    try {
+      const channels = (await this.call<{ teamId: string; channelId: string; name: string; url: string }[]>("teams_joined_channels"))
+        .map(item => ({ id: `${item.teamId}:${item.channelId}`, teamId: item.teamId, channelId: item.channelId, name: item.name, url: item.url }));
+      if (epoch !== this.epoch) return [];
+      this.joined = { until: this.now() + JOINED_TTL, channels };
+      if (this.scanError) { this.scanError = ""; this.emit(); }
+      return channels;
+    } catch (error) {
+      if (epoch === this.epoch) { this.joined = { until: this.now() + 5 * 60_000, channels: [] }; this.scanError = String(error); this.emit(); }
+      return [];
+    }
+  }
+  async fetch(channel: TeamsChannel, parent: string | null = null, cursor: string | null = null, force = false,
+    scan = false): Promise<MessagePage> {
     const key = this.key(channel, parent, cursor);
     const cached = this.peek(channel, parent, cursor);
     if (!force && cached && this.now() - cached.at < TTL) return cached.page;
@@ -150,14 +223,16 @@ export class TeamsData {
       try {
         if (epoch !== this.epoch || this.now() < this.blockedUntil) throw new Error("Teams 조회가 취소되었거나 잠시 대기 중입니다.");
         const page = await this.call<MessagePage>("teams_messages", {
-          teamId: channel.teamId, channelId: channel.channelId, parentId: parent, next: cursor,
+          ...conversationTarget(channel), parentId: parent, next: cursor,
         });
         if (epoch !== this.epoch || generation !== (this.generations.get(context) ?? 0)) throw new Error("대화 변경 후 다시 갱신해 주세요.");
-        this.put(key, page);
+        // Background mention scans of untabbed channels keep no pages or unread state.
+        if (!scan) this.put(key, page);
         this.failures.delete(key);
-        if (!parent && !cursor) this.observe(channel, page);
+        if (!parent && !cursor && !scan) this.observe(channel, page);
         // Only fresh head pages notify. Cached/paginated history must never replay alerts.
-        if (!parent && !cursor && page.account_id && page.messages.every(message => message.mentions_me !== undefined)) {
+        // Chats notify every new message through refreshChats instead.
+        if (!parent && !cursor && !channel.chatId && page.account_id && page.messages.every(message => message.mentions_me !== undefined)) {
           try {
             await this.call("teams_observe_mentions", { account: page.account_id, channel: channel.id,
               name: channel.name, url: channel.url, mentions: page.messages.flatMap(message => message.mentions_me ?? []) });
@@ -199,7 +274,8 @@ export class TeamsData {
   reset() {
     this.epoch++;
     this.pages.clear(); this.pending.clear(); this.failures.clear(); this.generations.clear();
-    this.memberCache.clear();
+    this.memberCache.clear(); this.chatsRequest = undefined; this.joined = undefined;
+    this.chats = null; this.chatsAccount = null; this.chatsError = ""; this.scanError = "";
     this.activity.clear(); this.notificationError = ""; this.blockedUntil = 0; this.emit();
   }
 }

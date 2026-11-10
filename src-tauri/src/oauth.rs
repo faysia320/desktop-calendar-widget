@@ -84,7 +84,7 @@ impl Provider {
                         "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
                     ),
                     scope: if matches!(self, Provider::Teams) {
-                        "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/ChannelMessage.Read.All https://graph.microsoft.com/ChannelMessage.Send https://graph.microsoft.com/ChannelMember.Read.All"
+                        "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/ChannelMessage.Read.All https://graph.microsoft.com/ChannelMessage.Send https://graph.microsoft.com/ChannelMember.Read.All https://graph.microsoft.com/Chat.Read https://graph.microsoft.com/ChatMessage.Send https://graph.microsoft.com/Team.ReadBasic.All https://graph.microsoft.com/Channel.ReadBasic.All"
                     } else {
                         "offline_access https://graph.microsoft.com/Calendars.Read https://graph.microsoft.com/Calendars.Read.Shared"
                     },

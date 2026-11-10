@@ -16,6 +16,10 @@ pub struct MentionStore { path: PathBuf, lock: Mutex<()> }
 impl MentionStore {
     pub fn new(path: PathBuf) -> Self { Self { path, lock: Mutex::new(()) } }
     fn observe(&self, key: String, mentions: &[Mention], now: i64) -> Result<usize, String> {
+        Ok(self.observe_new(key, mentions, now)?.len())
+    }
+    // Returns the IDs that are new since the key's first observation.
+    fn observe_new(&self, key: String, mentions: &[Mention], now: i64) -> Result<Vec<String>, String> {
         let _guard = self.lock.lock().map_err(|_| "멘션 알림 기록 잠금 실패")?;
         let mut records: Records = match fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "멘션 알림 기록을 읽지 못했습니다. 기존 파일은 보존됩니다.")?,
@@ -29,13 +33,13 @@ impl MentionStore {
         let old_len = state.seen.len();
         state.seen.retain(|_, time| *time >= cutoff);
         let mut changed = first || state.seen.len() != old_len;
-        let mut count = 0;
+        let mut fresh = Vec::new();
         for mention in mentions {
             if mention.time <= cutoff || mention.time > now + 60_000 || mention.id.is_empty()
                 || mention.id.len() > 512 || state.seen.contains_key(&mention.id) { continue; }
             state.seen.insert(mention.id.clone(), mention.time);
             changed = true;
-            if !first { count += 1; }
+            if !first { fresh.push(mention.id.clone()); }
         }
         if changed {
             let save = || -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +54,7 @@ impl MentionStore {
             };
             save().map_err(|_| "멘션 알림 기록을 저장하지 못했습니다.".to_string())?;
         }
-        Ok(count)
+        Ok(fresh)
     }
 }
 
@@ -116,6 +120,12 @@ fn register_shortcut() -> Result<(), String> {
 }
 
 fn show_notification(name: &str, url: &str, count: usize) -> Result<(), String> {
+    let body = if count == 0 { "멘션 알림 연결을 확인하는 테스트 알림입니다.".to_string() }
+        else { format!("나를 멘션한 새 메시지 {count}개가 있습니다.") };
+    show_toast(name, &body, url, count == 0)
+}
+
+fn show_toast(name: &str, body: &str, url: &str, test: bool) -> Result<(), String> {
     use windows::{core::HSTRING, Data::Xml::Dom::XmlDocument,
         UI::Notifications::{ToastNotification, ToastNotificationManager, NotificationSetting}};
     const APP_ID: &str = "com.rocket.desktopcalendarwidget";
@@ -139,13 +149,11 @@ fn show_notification(name: &str, url: &str, count: usize) -> Result<(), String> 
             _ => {},
         }
         let document = XmlDocument::new()?;
-        let body = if count == 0 { "멘션 알림 연결을 확인하는 테스트 알림입니다.".to_string() }
-            else { format!("나를 멘션한 새 메시지 {count}개가 있습니다.") };
         document.LoadXml(&HSTRING::from(format!(
             "<toast activationType=\"protocol\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>Teams · {}</text><text>{}</text></binding></visual></toast>",
-            xml(url), xml(name), xml(&body))))?;
+            xml(url), xml(name), xml(body))))?;
         let toast = ToastNotification::CreateToastNotification(&document)?;
-        if count == 0 {
+        if test {
             toast.SetTag(&HSTRING::from("mention-test"))?;
             toast.SetGroup(&HSTRING::from("tests"))?;
         }
@@ -157,12 +165,8 @@ fn show_notification(name: &str, url: &str, count: usize) -> Result<(), String> 
 #[tauri::command]
 pub fn teams_observe_mentions(store: State<'_, MentionStore>, account: String, channel: String,
     name: String, url: String, mentions: Vec<Mention>) -> Result<(), String> {
-    let link = url::Url::parse(&url).map_err(|_| "멘션 알림 채널 링크가 올바르지 않습니다.")?;
     if account.is_empty() || account.len() > 512 || channel.is_empty() || channel.len() > 2048
-        || name.chars().count() > 80 || mentions.len() > 50_000 || link.scheme() != "https"
-        || !matches!(link.host_str(), Some("teams.microsoft.com" | "teams.cloud.microsoft"))
-        || !link.username().is_empty() || link.password().is_some() || link.port().is_some()
-        || !(link.path().starts_with("/l/channel/") || link.path().starts_with("/l/message/")) {
+        || name.chars().count() > 80 || mentions.len() > 50_000 || !teams_link(&url, &["/l/channel/", "/l/message/"]) {
         return Err("멘션 알림 정보가 올바르지 않습니다.".into());
     }
     let key = serde_json::to_string(&[account, channel]).map_err(|_| "멘션 알림 키 오류")?;
@@ -170,6 +174,40 @@ pub fn teams_observe_mentions(store: State<'_, MentionStore>, account: String, c
     // Failed Windows delivery remains visible through the separate unread @ badge.
     let count = store.observe(key, &mentions, chrono::Utc::now().timestamp_millis())?;
     if count > 0 { show_notification(&name, &url, count)?; }
+    Ok(())
+}
+
+fn teams_link(url: &str, paths: &[&str]) -> bool {
+    url::Url::parse(url).is_ok_and(|link| link.scheme() == "https"
+        && matches!(link.host_str(), Some("teams.microsoft.com" | "teams.cloud.microsoft"))
+        && link.username().is_empty() && link.password().is_none() && link.port().is_none()
+        && paths.iter().any(|path| link.path().starts_with(path)))
+}
+
+#[derive(Deserialize)]
+pub struct ChatNotice { id: String, time: i64, name: String, author: String, text: String, url: String }
+
+// New chat messages share one baseline per account, so a chat started after the
+// first observation still notifies (a per-chat baseline would swallow it).
+#[tauri::command]
+pub fn teams_observe_chats(store: State<'_, MentionStore>, account: String, chats: Vec<ChatNotice>) -> Result<(), String> {
+    if account.is_empty() || account.len() > 512 || chats.len() > 200
+        || chats.iter().any(|chat| !teams_link(&chat.url, &["/l/chat/"]) || chat.name.chars().count() > 200) {
+        return Err("채팅 알림 정보가 올바르지 않습니다.".into());
+    }
+    let key = serde_json::to_string(&[account.as_str(), "chats"]).map_err(|_| "채팅 알림 키 오류")?;
+    let mentions: Vec<Mention> = chats.iter().map(|chat| Mention { id: chat.id.clone(), time: chat.time }).collect();
+    let fresh = store.observe_new(key, &mentions, chrono::Utc::now().timestamp_millis())?;
+    let mut notices: Vec<&ChatNotice> = chats.iter().filter(|chat| fresh.contains(&chat.id)).collect();
+    notices.sort_by(|a, b| b.time.cmp(&a.time));
+    for chat in notices.iter().take(3) {
+        let text: String = chat.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+        let body = if text.is_empty() { format!("{}님이 메시지를 보냈습니다.", chat.author) } else { format!("{}: {text}", chat.author) };
+        show_toast(&chat.name, &body, &chat.url, false).map_err(|error| error.replace("채널의 @ 표시는 유지됩니다.", "채팅 탭의 표시는 유지됩니다."))?;
+    }
+    if notices.len() > 3 {
+        show_toast("채팅", &format!("새 채팅 메시지 {}개가 더 있습니다.", notices.len() - 3), &notices[3].url, false)?;
+    }
     Ok(())
 }
 
@@ -194,6 +232,13 @@ mod tests {
         assert!(store.observe("a:channel".into(), &[], 400).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"broken");
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn chat_links_and_channel_links_are_validated_separately() {
+        assert!(teams_link("https://teams.microsoft.com/l/chat/19%3Aabc/conversations", &["/l/chat/"]));
+        assert!(!teams_link("https://teams.microsoft.com/l/channel/19%3Aabc/x", &["/l/chat/"]));
+        assert!(!teams_link("https://evil.example/l/chat/x", &["/l/chat/"]));
+        assert!(!teams_link("https://teams.microsoft.com:8443/l/chat/x", &["/l/chat/"]));
     }
     #[test]
     fn notification_xml_cannot_inject_markup() {

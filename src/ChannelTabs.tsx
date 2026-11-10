@@ -1,13 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import type { TeamsChannel } from "./teams";
+import { Icon } from "./icons";
 
 export const NEWS_TAB_ID = "builtin:geeknews";
+export const CHATS_TAB_ID = "builtin:chats";
 type Drag = { id: string; pointer: number; startX: number; startY: number; x: number; y: number; moving: boolean };
 type Menu = { id: string; name: string; x: number; y: number };
 
-export default function ChannelTabs({ channels, activeId, disabled, unread, mentioned, onSelect, onReorder, onClose }: {
-  channels: TeamsChannel[]; activeId: string; disabled: boolean;
+export default function ChannelTabs({ channels, activeId, disabled, chatUnread, unread, mentioned, onSelect, onReorder, onClose }: {
+  channels: TeamsChannel[]; activeId: string; disabled: boolean; chatUnread: boolean;
   unread: (id: string) => boolean;
   mentioned: (id: string) => boolean;
   onSelect: (id: string) => void;
@@ -109,7 +111,7 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, ment
       event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect();
       setMenu({ id: channel.id, name: channel.name, x: rect.left, y: rect.bottom }); return;
     }
-    const ids = [NEWS_TAB_ID, ...channels.map(channel => channel.id)];
+    const ids = [NEWS_TAB_ID, CHATS_TAB_ID, ...channels.map(channel => channel.id)];
     let next = index;
     if (event.key === "ArrowRight") next = (index + 1) % ids.length;
     else if (event.key === "ArrowLeft") next = (index + ids.length - 1) % ids.length;
@@ -131,6 +133,16 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, ment
           <span aria-hidden="true">N</span> GeekNews <span className="teams-fixed-label">고정</span>
         </button>
       </div>
+      <div className={`teams-tab teams-tab-fixed${activeId === CHATS_TAB_ID ? " active" : ""}`}>
+        <button role="tab" id="chats-tab" data-channel-id={CHATS_TAB_ID} aria-selected={activeId === CHATS_TAB_ID} aria-controls="teams-chats-view"
+          tabIndex={activeId === CHATS_TAB_ID ? 0 : -1} disabled={disabled}
+          data-tooltip={`채팅 · DM과 그룹 채팅${chatUnread ? " · 위젯에서 미확인 메시지 있음" : ""}`}
+          aria-label={`채팅${chatUnread ? ", 미확인 메시지 있음" : ""}`}
+          onClick={() => onSelect(CHATS_TAB_ID)} onKeyDown={event => keyboard(event, 1)}>
+          <span className="teams-tab-icon" aria-hidden="true"><Icon name="chat" size={12} /></span> 채팅
+          {chatUnread && <span className="teams-unread-dot" aria-hidden="true" />}
+        </button>
+      </div>
       {channels.map((channel, index) => <div key={channel.id}
         className={`teams-tab${activeId === channel.id ? " active" : ""}${draggedId === channel.id ? " dragging" : ""}${before === channel.id ? " drop-before" : ""}${after === channel.id ? " drop-after" : ""}`}>
         <button role="tab" data-channel-id={channel.id} aria-selected={activeId === channel.id} aria-controls="teams-conversation"
@@ -138,7 +150,7 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, ment
           data-tooltip={`${channel.name}${mentioned(channel.id) ? " · 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? " · 위젯에서 미확인 메시지 있음" : ""} · 드래그로 순서 이동 · 우클릭으로 닫기`}
           aria-label={`${channel.name}${mentioned(channel.id) ? ", 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? ", 미확인 메시지 있음" : ""}`} aria-haspopup="menu"
           onClick={event => { if (suppressClick.current && event.detail !== 0) { suppressClick.current = false; return; } onSelect(channel.id); }}
-          onKeyDown={event => keyboard(event, index + 1, channel)}
+          onKeyDown={event => keyboard(event, index + 2, channel)}
           onPointerDown={event => start(event, channel.id)} onPointerMove={move} onPointerUp={finish}
           onPointerCancel={cancelDrag} onLostPointerCapture={cancelDrag} onDragStart={event => event.preventDefault()}
           onContextMenu={event => { event.preventDefault(); cancelDrag(); if (!disabled) setMenu({ id: channel.id, name: channel.name, x: event.clientX, y: event.clientY }); }}>

@@ -1,6 +1,7 @@
 import { FormEvent, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TeamsChannel } from "./teams";
+import { conversationTarget } from "./teamsData";
 
 export type Mention = { start: number; end: number; userId: string; displayName: string };
 export type ComposerDraft = { text: string; mentions: Mention[] };
@@ -65,11 +66,11 @@ export default memo(function TeamsComposer({ channel, reply, initialDraft, sendi
   useEffect(() => {
     if (!showing || members !== null || memberError || memberPending.current) return;
     memberPending.current = true;
-    void invoke<Member[]>("teams_members", { teamId: channel.teamId, channelId: channel.channelId })
+    void invoke<Member[]>("teams_members", conversationTarget(channel))
       .then((value) => { if (mounted.current) setMembers(value); })
       .catch((reason) => { if (mounted.current) setMemberError(String(reason)); })
       .finally(() => { memberPending.current = false; });
-  }, [showing, members, memberError, memberAttempt, channel.teamId, channel.channelId]);
+  }, [showing, members, memberError, memberAttempt, channel.teamId, channel.channelId, channel.chatId]);
 
   function updateQuery(field: HTMLTextAreaElement) {
     if (composing.current || field.selectionStart !== field.selectionEnd) { setQuery(null); return; }

@@ -75,6 +75,20 @@
 .teams-message-body pre code { background: none; padding: 0; }
 .teams-message-body hr { margin: 10px 0; border: 0; border-top: 1px solid var(--hairline); }
 .teams-inline-mention { color: var(--accent); font-weight: 500; }
+.teams-inline-image { display: block; position: relative; max-width: 100%; max-height: 480px; margin: 6px 0; overflow: hidden; border-radius: 8px; }
+.teams-inline-image:not([style]) { width: fit-content; }
+.teams-inline-image.loading { min-width: 120px; min-height: 80px; background: color-mix(in srgb, currentColor 8%, transparent); }
+.teams-inline-image img { display: block; width: 100%; height: 100%; max-height: 480px; object-fit: contain; object-position: left top; }
+.teams-inline-image-missing { color: var(--muted); }
+.teams-inline-image-open { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.teams-inline-image-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.teams-image-viewer { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 48px 16px 16px; overflow: auto; background: rgb(0 0 0 / 82%); }
+.teams-image-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; cursor: zoom-in; box-shadow: 0 8px 32px rgb(0 0 0 / 50%); }
+.teams-image-viewer.actual { align-items: flex-start; justify-content: flex-start; }
+.teams-image-viewer.actual img { max-width: none; max-height: none; margin: auto; cursor: zoom-out; }
+.teams-image-viewer-close { position: fixed; top: 10px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: rgb(255 255 255 / 14%); color: #fff; font-size: 20px; line-height: 1; cursor: pointer; }
+.teams-image-viewer-close:hover { background: rgb(255 255 255 / 26%); }
+.teams-image-viewer-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .teams-table-scroll { max-width: 100%; overflow-x: auto; margin: 12px 0 4px; border: 1px solid color-mix(in srgb, var(--text) 22%, transparent); border-radius: 7px; scrollbar-width: thin; }
 .teams-table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .teams-message-body table { border-collapse: collapse; width: 100%; min-width: 380px; text-align: left; table-layout: auto; }
@@ -146,6 +160,20 @@
 .teams-error { flex: none; max-height: 100px; overflow-y: auto; margin: 0 10px 6px; padding: 7px 8px; border-radius: 8px; background: color-mix(in srgb, var(--error) 8%, transparent); color: var(--error); font-size: 11px; overflow-wrap: anywhere; }
 .teams-error button { margin-top: 4px; padding: 3px 7px; background: var(--hover); font-size: 11px; }
 .teams-panel-error { flex: none; max-height: 90px; overflow-y: auto; padding: 5px 12px; }
+.teams-chat-list { display: flex; flex-direction: column; gap: 2px; padding-top: 4px; }
+.teams-chat-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 10px; text-align: left; color: inherit; }
+.teams-chat-item:hover { background: var(--hover); }
+.teams-chat-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.teams-chat-item .teams-avatar { flex: none; }
+.teams-chat-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.teams-chat-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.teams-chat-title strong { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; font-weight: 600; }
+.teams-chat-item.unread .teams-chat-title strong { font-weight: 700; }
+.teams-chat-title time { flex: none; color: var(--muted); font-size: 10px; }
+.teams-chat-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 11.5px; }
+.teams-chat-item.unread .teams-chat-preview { color: var(--text); }
+.teams-scan-note { flex: none; margin: 0 12px 4px; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+.teams-tab-icon { display: inline-flex; vertical-align: -1px; }
 .teams-placeholder { padding: 25px 0; color: var(--muted); font-size: 12px; text-align: center; }
 
 .teams-unread-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #7cafff; margin-left: 5px; box-shadow: 0 0 0 2px #7cafff20; }
