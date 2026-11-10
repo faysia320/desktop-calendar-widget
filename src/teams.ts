@@ -35,6 +35,8 @@ export type TeamsMessage = {
   reactions: TeamsReaction[];
   reply_count: number | null;
   other_activity: number;
+  mine?: boolean;
+  reply_activity?: number;
   mentions_me?: { id: string; time: number }[];
   activities?: MessageActivity[];
 };

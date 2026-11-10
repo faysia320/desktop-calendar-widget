@@ -191,6 +191,9 @@
 .teams-activity-emojis { font-size: 11px; }
 .teams-activity-location { color: var(--muted); font-size: 10.5px; font-weight: 600; }
 .teams-count-badge { display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin-left: 5px; padding: 0 4px; border-radius: 8px; background: #e5484d; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; opacity: 1 !important; }
+.teams-read-divider { display: flex; align-items: center; gap: 8px; margin: 10px 0 12px; color: #ff8a3d; font-size: 10.5px; font-weight: 700; }
+.teams-read-divider::before, .teams-read-divider::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, #ff8a3d 55%, transparent); }
+.teams-new-replies { margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: color-mix(in srgb, #ff8a3d 18%, transparent); color: #ff8a3d; font-size: 10px; font-weight: 700; }
 .teams-scan-note { flex: none; margin: 0 12px 4px; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
 .teams-tab-icon { display: inline-flex; vertical-align: -1px; }
 .teams-placeholder { padding: 25px 0; color: var(--muted); font-size: 12px; text-align: center; }

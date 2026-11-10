@@ -1,4 +1,4 @@
-import { ReactNode, FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, ReactNode, FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./icons";
 import { htmlToText } from "./news";
@@ -130,6 +130,9 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
   const messageItems = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const loadedOnce = useRef(false);
+  const anchored = useRef(false);
+  const [lastRead, setLastRead] = useState<{ mark: number; divider: string | null } | null>(null);
+  const [openedThreads, setOpenedThreads] = useState<Set<string>>(() => new Set());
   const scrollRestore = useRef<{ bottom: boolean; top: number; id?: string; offset?: number } | null>(null);
   const parentId = parent?.id ?? null;
   const focused = useRef<{ id: string } | null>(null);
@@ -150,7 +153,8 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
 
   function rememberScroll(forceBottom = false, keepPosition = false) {
     const list = messageList.current;
-    if (!list) return;
+    // A restore not yet applied (e.g. the unread anchor) describes the intended position better than the DOM.
+    if (!list || (scrollRestore.current && !forceBottom)) return;
     const bottom = forceBottom || (!keepPosition && list.scrollHeight - list.clientHeight - list.scrollTop < 48);
     followBottom.current = bottom;
     const bounds = list.getBoundingClientRect();
@@ -160,6 +164,24 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
       bottom, top: list.scrollTop, id: anchor?.dataset.messageId,
       offset: anchor ? anchor.getBoundingClientRect().top - bounds.top : undefined,
     };
+  }
+
+  // Opening a conversation with unread posts starts at the first one, below a "last read" divider.
+  function unreadAnchor(list: TeamsMessage[], accountId: string | null) {
+    if (parentId || anchored.current) return null;
+    const mark = teamsData.readMark(channel.id, accountId);
+    if (mark === undefined) return null;
+    anchored.current = true;
+    const sorted = list.slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const firstNew = sorted.find((message) => !message.mine && !message.deleted && Date.parse(message.created_at) > mark);
+    // With only new replies, start at the first thread that has them.
+    const target = firstNew ?? sorted.find((message) => (message.reply_activity ?? 0) > mark);
+    // If every loaded post is new, older unread ones may be unloaded: don't claim a read position.
+    setLastRead({ mark, divider: firstNew && firstNew !== sorted[0] ? firstNew.id : null });
+    if (!target) return null;
+    followBottom.current = false;
+    setAtBottom(false);
+    return { bottom: false, top: 0, id: target.id, offset: firstNew ? 44 : 12 };
   }
 
   useLayoutEffect(() => {
@@ -208,8 +230,15 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
         }
       }
       if (request !== version.current || reactionRequest !== reactionVersion.current) return;
-      rememberScroll(!loadedOnce.current, Boolean(cursor));
+      const first = !loadedOnce.current;
+      rememberScroll(first, Boolean(cursor));
       loadedOnce.current = true;
+      if (!cursor && !background) {
+        const anchor = unreadAnchor(received, page.account_id);
+        if (anchor) scrollRestore.current = anchor;
+      }
+      // Never jump later, e.g. if read marks were still loading on the first page.
+      if (first) anchored.current = true;
       setMessages((previous) => {
         // Polling updates existing items without dropping pages the user has loaded.
         const combined = new Map((cursor || background ? previous : []).map((message) => [message.id, message]));
@@ -248,7 +277,10 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
     setAccount(cached?.page.account_id ?? null);
     setLoaded(Boolean(cached));
     setAtBottom(true);
-    if (cached) { loadedOnce.current = true; scrollRestore.current = { bottom: true, top: 0 }; }
+    if (cached) {
+      loadedOnce.current = true;
+      scrollRestore.current = unreadAnchor(cached.page.messages, cached.page.account_id) ?? { bottom: true, top: 0 };
+    }
     setSynced(cached ? new Date(cached.at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) : "");
     setError("");
     setSendError("");
@@ -371,7 +403,10 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
         {!parent && loadMore}
         {!loaded && loading && <p className="teams-placeholder">대화를 불러오는 중…</p>}
         {loaded && messages.length === 0 && <p className="teams-placeholder">{parent ? "아직 답글이 없습니다." : "아직 대화가 없습니다."}</p>}
-        {messages.map((message) => <article className="teams-message" key={message.id} data-message-id={message.id}>
+        {messages.map((message) => <Fragment key={message.id}>
+          {!parent && lastRead?.divider === message.id && <div className="teams-read-divider" role="separator" aria-label="마지막으로 읽은 곳">
+            <span>마지막으로 읽은 곳</span></div>}
+          <article className="teams-message" data-message-id={message.id}>
           <div className="teams-avatar" aria-hidden="true">{message.author.slice(0, 1)}</div>
           <div className="teams-message-content">
             <header><strong>{message.author}</strong><time dateTime={message.created_at}>{messageTime(message.created_at)}</time></header>
@@ -400,11 +435,12 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
                 <button type="button" className="teams-picker-close" aria-label="반응 선택 닫기" onClick={() => setReactionPicker(null)}>×</button>
               </div>}
             </div>}
-            {!parent && !channel.chatId && !message.deleted && <button className="teams-reply" disabled={sending || reacting !== null} onClick={() => setParent(message)}>
+            {!parent && !channel.chatId && !message.deleted && <button className="teams-reply" disabled={sending || reacting !== null} onClick={() => { setOpenedThreads((previous) => new Set(previous).add(message.id)); setParent(message); }}>
               {message.reply_count == null ? "댓글 보기 / 작성" : `댓글 ${message.reply_count}개 · 보기 / 작성`}
+              {lastRead && (message.reply_activity ?? 0) > lastRead.mark && Date.parse(message.created_at) <= lastRead.mark && !openedThreads.has(message.id) && <span className="teams-new-replies">새 댓글</span>}
             </button>}
           </div>
-        </article>)}
+        </article></Fragment>)}
         {parent && loadMore}
         </div>
       </div>

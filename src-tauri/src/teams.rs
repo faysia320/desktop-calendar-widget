@@ -115,7 +115,10 @@ pub struct Message {
     has_attachments: bool,
     reactions: Vec<Reaction>,
     reply_count: Option<usize>,
+    mine: bool,
     other_activity: i64,
+    // Newest reply from someone else, separate from the post itself.
+    reply_activity: i64,
     mentions_me: Vec<crate::teams_notifications::Mention>,
     activities: Vec<Activity>,
 }
@@ -247,6 +250,9 @@ impl Message {
             has_attachments: value["attachments"].as_array().is_some_and(|items| !items.is_empty()),
             reactions: reactions(value, user_id),
             reply_count: value["replies"].as_array().map(Vec::len),
+            mine: user_id.is_some() && value.pointer("/from/user/id").and_then(Value::as_str) == user_id,
+            reply_activity: value["replies"].as_array().into_iter().flatten()
+                .map(|reply| other_activity(reply, user_id)).fold(0, i64::max),
             other_activity: value["replies"].as_array().into_iter().flatten()
                 .map(|reply| other_activity(reply, user_id)).fold(other_activity(value, user_id), i64::max),
             mentions_me: std::iter::once(value).chain(value["replies"].as_array().into_iter().flatten())
@@ -399,6 +405,7 @@ pub async fn teams_messages(
                 let replies = page["value"].as_array().ok_or("Teams 댓글 목록이 올바르지 않습니다.")?;
                 for reply in replies {
                     message.other_activity = message.other_activity.max(other_activity(reply, user_id.as_deref()));
+                    message.reply_activity = message.reply_activity.max(other_activity(reply, user_id.as_deref()));
                     if let Some(mention) = direct_mention(reply, user_id.as_deref()) { message.mentions_me.push(mention); }
                 }
                 reply_ids.extend(replies.iter().filter_map(|reply| reply["id"].as_str().map(str::to_string)));

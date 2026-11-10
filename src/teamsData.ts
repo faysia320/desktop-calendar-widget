@@ -182,6 +182,10 @@ export class TeamsData {
     if (this.initialized && this.marks[mark] === undefined && !this.markWrites.has(mark)) void this.markRead(ACTIVITY_ID, account, this.now());
     this.emit();
   }
+  readMark(channel: string, account: string | null) {
+    if (!this.initialized || !account) return undefined;
+    return this.marks[this.markKey(account, channel)];
+  }
   activities() { return [...this.feed.values()].sort((a, b) => b.time - a.time); }
   activityAccount() { return this.feedAccount; }
   activityMark() {
