@@ -91,7 +91,7 @@ function renderContent(content: Content[], onOpen: (url: string) => void): React
     if (part.tag === "text") return part.text;
     if (part.tag === "mention") return <span className="teams-inline-mention" key={index}>{part.text}</span>;
     const children = renderContent(part.children ?? [], onOpen);
-    if (part.tag === "a") return <a key={index} href={part.url} title={part.url} target="_blank" rel="noopener noreferrer"
+    if (part.tag === "a") return <a key={index} href={part.url} data-tooltip={part.url} target="_blank" rel="noopener noreferrer"
       onClick={event => { event.preventDefault(); onOpen(part.url!); }}
       onAuxClick={event => { event.preventDefault(); if (event.button === 1) onOpen(part.url!); }}
       onDragStart={event => event.preventDefault()}>{children}</a>;

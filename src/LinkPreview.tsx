@@ -45,7 +45,7 @@ export default memo(function LinkPreview({ url, label, onOpen }: { url: string; 
   }, [url, visible]);
   const host = new URL(url).hostname;
   const image = data?.image && /^data:image\/(png|jpeg|gif|webp);base64,/.test(data.image) && !imageFailed ? data.image : null;
-  return <a ref={container} className={`teams-link-preview${image ? " has-image" : ""}`} href={url} title={url}
+  return <a ref={container} className={`teams-link-preview${image ? " has-image" : ""}`} href={url} data-tooltip={url}
     target="_blank" rel="noopener noreferrer" onDragStart={event => event.preventDefault()}
     onClick={event => { event.preventDefault(); onOpen(url); }}
     onAuxClick={event => { event.preventDefault(); if (event.button === 1) onOpen(url); }}>

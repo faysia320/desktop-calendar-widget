@@ -1,0 +1,19 @@
+.widget-tooltip {
+  position: fixed;
+  z-index: 120;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--popover);
+  color: var(--text);
+  box-shadow: var(--popover-shadow);
+  backdrop-filter: blur(28px);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

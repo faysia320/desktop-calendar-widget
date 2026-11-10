@@ -324,7 +324,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
                 reaction={reaction} channel={channel} account={account} disabled={reacting !== null}
                 onClick={() => reaction.reaction_type == null ? openInTeams(message.web_url ?? channel.url) : reactTo(message, reaction.reaction_type, reaction.mine)}>
               </ReactionButton>)}
-              <button type="button" className="teams-reaction-add" aria-label="반응 추가" title="반응 추가"
+              <button type="button" className="teams-reaction-add" aria-label="반응 추가" data-tooltip="반응 추가"
                 aria-expanded={reactionPicker === message.id} disabled={reacting !== null}
                 onClick={() => setReactionPicker((current) => current === message.id ? null : message.id)}>☺ +</button>
               {reacting === message.id && <span className="muted" role="status">반영 중…</span>}
@@ -332,7 +332,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect }: {
                 onKeyDown={(event) => { if (event.key === "Escape") setReactionPicker(null); }}>
                 {REACTION_CHOICES.map(([emoji, label]) => {
                   const mine = message.reactions?.some((reaction) => reaction.reaction_type === emoji && reaction.mine) ?? false;
-                  return <button key={emoji} type="button" title={label} aria-label={label} aria-pressed={mine}
+                  return <button key={emoji} type="button" data-tooltip={label} aria-label={label} aria-pressed={mine}
                     onClick={() => reactTo(message, emoji, mine)}>{emoji}</button>;
                 })}
                 <button type="button" className="teams-picker-close" aria-label="반응 선택 닫기" onClick={() => setReactionPicker(null)}>×</button>
@@ -491,10 +491,10 @@ export default function TeamsPanel({ news }: { news: (active: boolean) => ReactN
     <header className="teams-header"><div className="teams-heading"><span className="teams-mark" aria-hidden="true">T</span><h2>Teams</h2></div>
       <div className="teams-actions">
         <button className="teams-account" disabled={!status?.configured || connecting} onClick={connect}
-          title={status?.connected ? "Teams 계정 다시 연결" : "Teams 연결"}>
+          data-tooltip={status?.connected ? "Teams 계정 다시 연결" : "Teams 연결"}>
           <span className={status?.connected ? "teams-connected" : "teams-disconnected"} />
           {connecting ? "연결 중…" : status?.connected ? "연결됨" : "연결"}</button>
-        <button className="icon-button" title="채널 추가" aria-label="채널 추가" disabled={!channelsReady || savingChannels} onClick={showAdd}><Icon name="plus" size={17} /></button>
+        <button className="icon-button" data-tooltip="채널 추가" aria-label="채널 추가" disabled={!channelsReady || savingChannels} onClick={showAdd}><Icon name="plus" size={17} /></button>
       </div>
     </header>
     <ChannelTabs channels={channels} activeId={active?.id ?? NEWS_TAB_ID} disabled={savingChannels}

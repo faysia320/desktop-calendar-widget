@@ -126,7 +126,7 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, ment
     <div className="teams-tabs" role="tablist" aria-label="Teams 채널" ref={bar}>
       <div className={`teams-tab teams-tab-fixed${activeId === NEWS_TAB_ID ? " active" : ""}`}>
         <button role="tab" id="geeknews-tab" data-channel-id={NEWS_TAB_ID} aria-selected={activeId === NEWS_TAB_ID} aria-controls="teams-news-view"
-          tabIndex={activeId === NEWS_TAB_ID ? 0 : -1} title="GeekNews · 고정 채널" disabled={disabled}
+          tabIndex={activeId === NEWS_TAB_ID ? 0 : -1} data-tooltip="GeekNews · 고정 채널" disabled={disabled}
           onClick={() => onSelect(NEWS_TAB_ID)} onKeyDown={event => keyboard(event, 0)}>
           <span aria-hidden="true">N</span> GeekNews <span className="teams-fixed-label">고정</span>
         </button>
@@ -135,7 +135,7 @@ export default function ChannelTabs({ channels, activeId, disabled, unread, ment
         className={`teams-tab${activeId === channel.id ? " active" : ""}${draggedId === channel.id ? " dragging" : ""}${before === channel.id ? " drop-before" : ""}${after === channel.id ? " drop-after" : ""}`}>
         <button role="tab" data-channel-id={channel.id} aria-selected={activeId === channel.id} aria-controls="teams-conversation"
           tabIndex={activeId === channel.id ? 0 : -1} disabled={disabled}
-          title={`${channel.name}${mentioned(channel.id) ? " · 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? " · 위젯에서 미확인 메시지 있음" : ""} · 드래그로 순서 이동 · 우클릭으로 닫기`}
+          data-tooltip={`${channel.name}${mentioned(channel.id) ? " · 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? " · 위젯에서 미확인 메시지 있음" : ""} · 드래그로 순서 이동 · 우클릭으로 닫기`}
           aria-label={`${channel.name}${mentioned(channel.id) ? ", 나를 멘션한 미확인 메시지 있음" : unread(channel.id) ? ", 미확인 메시지 있음" : ""}`} aria-haspopup="menu"
           onClick={event => { if (suppressClick.current && event.detail !== 0) { suppressClick.current = false; return; } onSelect(channel.id); }}
           onKeyDown={event => keyboard(event, index + 1, channel)}

@@ -149,7 +149,7 @@ export default memo(function TeamsComposer({ channel, reply, initialDraft, sendi
       aria-controls={query ? "teams-mention-list" : undefined}
       aria-activedescendant={query && matches.length ? `teams-mention-${selectedIndex}` : undefined}
       disabled={sending} placeholder={reply ? "답글을 입력하세요 (@ 멘션)" : `${channel.name}에 메시지 보내기 (@ 멘션)`}
-      title="Enter로 전송 · Shift+Enter로 줄바꿈"
+      data-tooltip="Enter로 전송 · Shift+Enter로 줄바꿈"
       onChange={(event) => { remember(event.currentTarget.value); if (!composing.current) updateQuery(event.currentTarget); }}
       onSelect={(event) => updateQuery(event.currentTarget)}
       onBlur={() => setQuery(null)}
@@ -171,7 +171,7 @@ export default memo(function TeamsComposer({ channel, reply, initialDraft, sendi
       }} />
     {error && <p className="error" role="alert">{error}</p>}
     <div className="teams-compose-footer"><button className="primary" type="submit"
-      title="Enter로 전송 · Shift+Enter로 줄바꿈" disabled={sending || !hasText}>{sending ? "전송 중…" : "보내기"}</button></div>
+      data-tooltip="Enter로 전송 · Shift+Enter로 줄바꿈" disabled={sending || !hasText}>{sending ? "전송 중…" : "보내기"}</button></div>
     {mentions.length > 0 && <div className="teams-selected-mentions" aria-label="선택된 멘션">멘션: {mentions.map((mention, index) =>
       <span key={`${mention.start}:${mention.userId}`}>{index > 0 && ", "}{mention.displayName}</span>)}</div>}
   </form>;

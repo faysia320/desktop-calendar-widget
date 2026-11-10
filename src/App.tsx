@@ -244,7 +244,7 @@ function Notices({
           <div className="notice" key={provider}>
             <div className="notice-text">
               {message && (
-                <p className={errors[provider] ? "error" : undefined} title={message}>
+                <p className={errors[provider] ? "error" : undefined} data-tooltip={message}>
                   {PROVIDER_LABELS[provider]}: {message}
                 </p>
               )}
@@ -262,7 +262,7 @@ function Notices({
       })}
       {shortcutError && (
         <div className="notice">
-          <p className="error" title={shortcutError}>단축키 등록 실패: {shortcutError}</p>
+          <p className="error" data-tooltip={shortcutError}>단축키 등록 실패: {shortcutError}</p>
         </div>
       )}
     </div>
@@ -302,7 +302,7 @@ function WidgetMenu({
             key={status.provider}
             className="menu-item"
             disabled={!status.configured || connectingProvider !== null || (status.connected && status.provider !== "microsoft")}
-            title={status.provider === "microsoft" && status.connected ? "공유 회의실 권한을 갱신하려면 Outlook 다시 연결" : undefined}
+            data-tooltip={status.provider === "microsoft" && status.connected ? "공유 회의실 권한을 갱신하려면 Outlook 다시 연결" : undefined}
             onClick={() => onConnect(status.provider)}
           >
             <span className={`dot ${status.provider}`} />
@@ -544,7 +544,7 @@ function NewsPanel({ now, active }: { now: Date; active: boolean }) {
     <section className="news" aria-label="GeekNews">
       <header className="news-header">
         <span className="news-status">{feed?.stale ? `${formatFetchedAt(feed.fetched_at)}에 받은 글` : "최신 소식 · 30분마다 갱신"}</span>
-        <button className={loading ? "icon-button spinning" : "icon-button"} aria-label="GeekNews 새로고침" title="GeekNews 새로고침"
+        <button className={loading ? "icon-button spinning" : "icon-button"} aria-label="GeekNews 새로고침" data-tooltip="GeekNews 새로고침"
           disabled={loading} onClick={() => void load()}><Icon name="refresh" size={14} /></button>
       </header>
       {feed ? (
@@ -748,14 +748,14 @@ function Widget() {
               </h1>
               <div className="toolbar-actions">
                 <button className="icon-button" disabled={!googleConnected}
-                  title={googleConnected ? `${selectedDay} 일정 추가 (날짜 더블클릭)` : "Google에 로그인하면 일정을 추가할 수 있습니다."}
+                  data-tooltip={googleConnected ? `${selectedDay} 일정 추가 (날짜 더블클릭)` : "Google에 로그인하면 일정을 추가할 수 있습니다."}
                   aria-label="일정 추가" onClick={() => openNewEvent(selectedDay)}>
                   <Icon name="plus" size={17} />
                 </button>
                 <div className="nav-group">
                   <button
                     className="icon-button"
-                    title="이전 달"
+                    data-tooltip="이전 달"
                     aria-label="이전 달"
                     onClick={() => calendarRef.current?.getApi().prev()}
                   >
@@ -764,7 +764,7 @@ function Widget() {
                   <button className="today-button" onClick={() => goToDay(today)}>오늘</button>
                   <button
                     className="icon-button"
-                    title="다음 달"
+                    data-tooltip="다음 달"
                     aria-label="다음 달"
                     onClick={() => calendarRef.current?.getApi().next()}
                   >
@@ -773,7 +773,7 @@ function Widget() {
                 </div>
                 <button
                   className={refreshing ? "icon-button spinning" : "icon-button"}
-                  title={syncedAtLabel ? `새로고침 (마지막 동기화 ${syncedAtLabel})` : "새로고침"}
+                  data-tooltip={syncedAtLabel ? `새로고침 (마지막 동기화 ${syncedAtLabel})` : "새로고침"}
                   aria-label="새로고침"
                   onClick={refresh}
                 >
@@ -781,7 +781,7 @@ function Widget() {
                 </button>
                 <button
                   className="icon-button menu-toggle"
-                  title="설정"
+                  data-tooltip="설정"
                   aria-label="설정"
                   aria-expanded={menuOpen}
                   onClick={() => setMenuOpen((open) => !open)}
@@ -818,7 +818,7 @@ function Widget() {
                   return (
                     <>
                       <span className="day-number">{cell.dayNumberText.replace("일", "")}</span>
-                      {holiday && <span className="holiday-name" title={holiday}>{holiday}</span>}
+                      {holiday && <span className="holiday-name" data-tooltip={holiday}>{holiday}</span>}
                     </>
                   );
                 }}
