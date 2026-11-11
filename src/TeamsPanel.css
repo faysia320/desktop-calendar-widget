@@ -210,3 +210,34 @@
 .teams-mention-badge { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 19px; height: 19px; margin-left: 5px; border-radius: 10px; background: #f4a261; color: #20180f; font-size: 13px; font-weight: 800; }
 .teams-tab > [role="tab"] .teams-mention-badge { opacity: 1; vertical-align: middle; }
 .teams-tab:has(.teams-unread-dot) > [role="tab"] { font-weight: 700; }
+.adaptive-card { max-width: 520px; margin-top: 6px; padding: 12px 14px; border: 1px solid var(--hairline); border-top: 3px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--sheet-base) 94%, var(--text) 3%); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.teams-message-body:empty + .adaptive-card, .teams-message-bubble > .adaptive-card:first-child { margin-top: 0; }
+.adaptive-item { margin-top: 8px; }
+.adaptive-item:first-child, .adaptive-item.spacing-none { margin-top: 0; }
+.adaptive-item.spacing-small { margin-top: 4px; }
+.adaptive-item.spacing-large { margin-top: 14px; }
+.adaptive-item.separator { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+.adaptive-text { white-space: pre-wrap; }
+.adaptive-text.nowrap { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.adaptive-text a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.adaptive-text p { margin: 0; }
+.adaptive-container.emphasis { padding: 8px 10px; border-radius: 4px; background: var(--hover); }
+.adaptive-columns { display: flex; gap: 10px; min-width: 0; }
+.adaptive-column { min-width: 0; }
+.adaptive-facts { display: grid; gap: 4px; margin: 0; }
+.adaptive-facts > div { display: flex; gap: 10px; }
+.adaptive-facts dt { flex: 0 0 auto; max-width: 45%; font-weight: 700; }
+.adaptive-facts dd { margin: 0; min-width: 0; }
+.adaptive-table { border-collapse: collapse; width: 100%; }
+.adaptive-table th, .adaptive-table td { padding: 6px 9px; border-bottom: 1px solid var(--hairline); text-align: left; vertical-align: top; }
+.adaptive-image { display: block; max-width: 100%; max-height: 320px; border-radius: 4px; }
+.adaptive-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.adaptive-actions button { padding: 4px 10px; border: 1px solid var(--hairline); border-radius: 4px; background: transparent; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.adaptive-actions button:hover { background: var(--hover); }
+.adaptive-text.html { white-space: normal; }
+.adaptive-text.html p { margin: 0; }
+.message-card-title { font-size: 1.25em; font-weight: 700; line-height: 1.35; }
+.adaptive-card > * + * { margin-top: 8px; }
+.message-card-section > * + * { margin-top: 6px; }
+.message-card-activity { font-weight: 700; }
+.adaptive-facts dt .adaptive-text { font-weight: 700; }

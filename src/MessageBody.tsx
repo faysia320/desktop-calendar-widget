@@ -113,6 +113,12 @@ function renderContent(content: Content[], onOpen: (url: string) => void, channe
   });
 }
 
+// Sanitized HTML fragment inside cards: no link previews, no hosted images.
+export function CardHtml({ html, onOpen }: { html: string; onOpen: (url: string) => void }) {
+  const content = useMemo(() => renderContent(parseMessageBody(html, true).content, onOpen, { teamId: "", channelId: "", chatId: null }), [html, onOpen]);
+  return <>{content}</>;
+}
+
 export default memo(function MessageBody({ body, bodyType, deleted, teamId, channelId, chatId }:
   { body: string; bodyType: string; deleted: boolean; teamId: string; channelId: string; chatId: string | null }) {
   const parsed = useMemo(() => parseMessageBody(deleted ? "" : body, bodyType.toLowerCase() === "html"), [body, bodyType, deleted]);

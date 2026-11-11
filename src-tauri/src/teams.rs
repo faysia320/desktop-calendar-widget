@@ -113,6 +113,8 @@ pub struct Message {
     web_url: Option<String>,
     deleted: bool,
     has_attachments: bool,
+    // Adaptive Card payloads (e.g. Workflows posts), rendered in place of the attachment link.
+    cards: Vec<Value>,
     reactions: Vec<Reaction>,
     reply_count: Option<usize>,
     mine: bool,
@@ -229,6 +231,19 @@ fn other_activity(value: &Value, user_id: Option<&str>) -> i64 {
         .map(|time| time.timestamp_millis()).unwrap_or(0)
 }
 
+const ADAPTIVE_CARD: &str = "application/vnd.microsoft.card.adaptive";
+// Legacy MessageCard, still used by Workflows/connector posts.
+const CONNECTOR_CARD: &str = "application/vnd.microsoft.teams.card.o365connector";
+
+fn adaptive_card(attachment: &Value) -> Option<Value> {
+    let kind = match attachment["contentType"].as_str()? { ADAPTIVE_CARD => "AdaptiveCard", CONNECTOR_CARD => "MessageCard", _ => return None };
+    // Graph returns the card as a JSON string; keep huge payloads out of the UI.
+    let content = attachment["content"].as_str().filter(|content| content.len() <= 100_000)?;
+    let mut card = serde_json::from_str::<Value>(content).ok().filter(Value::is_object)?;
+    if kind == "MessageCard" { card["type"] = kind.into(); }
+    (card["type"] == kind).then_some(card)
+}
+
 impl Message {
     fn from_graph(value: &Value, user_id: Option<&str>) -> Result<Self, String> {
         let text = |key: &str| value[key].as_str().unwrap_or_default().to_string();
@@ -247,7 +262,8 @@ impl Message {
             subject: value["subject"].as_str().map(str::to_string),
             web_url: value["webUrl"].as_str().map(str::to_string),
             deleted: !value["deletedDateTime"].is_null(),
-            has_attachments: value["attachments"].as_array().is_some_and(|items| !items.is_empty()),
+            has_attachments: value["attachments"].as_array().into_iter().flatten().any(|item| adaptive_card(item).is_none()),
+            cards: value["attachments"].as_array().into_iter().flatten().filter_map(adaptive_card).take(5).collect(),
             reactions: reactions(value, user_id),
             reply_count: value["replies"].as_array().map(Vec::len),
             mine: user_id.is_some() && value.pointer("/from/user/id").and_then(Value::as_str) == user_id,
@@ -890,6 +906,23 @@ mod tests {
         let message = Message::from_graph(&json!({"id": "1", "from": {"application": {"displayName": "Bot"}}, "deletedDateTime": "2026-01-01", "attachments": [{"id": "a"}]}), None).unwrap();
         assert_eq!(message.author, "Bot");
         assert!(message.deleted && message.has_attachments);
+    }
+
+    #[test]
+    fn adaptive_cards_are_parsed_instead_of_counted_as_attachments() {
+        let card = json!({"type":"AdaptiveCard","body":[{"type":"TextBlock","text":"휴가 현황"}]}).to_string();
+        let message = Message::from_graph(&json!({"id": "1", "attachments": [
+            {"id": "a", "contentType": ADAPTIVE_CARD, "content": card},
+            {"id": "b", "contentType": ADAPTIVE_CARD, "content": "not json"}]}), None).unwrap();
+        assert_eq!(message.cards.len(), 1);
+        assert_eq!(message.cards[0]["body"][0]["text"], "휴가 현황");
+        assert!(message.has_attachments);
+        let only_card = Message::from_graph(&json!({"id": "1", "attachments": [{"contentType": ADAPTIVE_CARD, "content": card}]}), None).unwrap();
+        assert!(!only_card.has_attachments);
+        let connector = json!({"title":"출장 현황","sections":[{"facts":[{"name":"이름","value":"<p>전일</p>"}]}]}).to_string();
+        let message = Message::from_graph(&json!({"id": "1", "attachments": [{"contentType": CONNECTOR_CARD, "content": connector}]}), None).unwrap();
+        assert!(!message.has_attachments);
+        assert_eq!(message.cards[0]["type"], "MessageCard");
         assert!(Message::from_graph(&json!({}), None).is_err());
     }
     #[test]
