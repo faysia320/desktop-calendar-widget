@@ -115,6 +115,7 @@ pub struct Message {
     has_attachments: bool,
     // Adaptive Card payloads (e.g. Workflows posts), rendered in place of the attachment link.
     cards: Vec<Value>,
+    files: Vec<FileAttachment>,
     reactions: Vec<Reaction>,
     reply_count: Option<usize>,
     mine: bool,
@@ -244,6 +245,18 @@ fn adaptive_card(attachment: &Value) -> Option<Value> {
     (card["type"] == kind).then_some(card)
 }
 
+#[derive(Serialize)]
+pub struct FileAttachment { name: String, url: String }
+
+// Files shared in a message arrive as SharePoint/OneDrive references.
+fn file_attachment(attachment: &Value) -> Option<FileAttachment> {
+    if attachment["contentType"].as_str() != Some("reference") { return None; }
+    let url = message_link(attachment["contentUrl"].as_str()?).ok()?.to_string();
+    let name = attachment["name"].as_str().map(str::trim).filter(|name| !name.is_empty()).map(str::to_string)
+        .unwrap_or_else(|| url.rsplit('/').next().unwrap_or("파일").to_string());
+    Some(FileAttachment { name, url })
+}
+
 impl Message {
     fn from_graph(value: &Value, user_id: Option<&str>) -> Result<Self, String> {
         let text = |key: &str| value[key].as_str().unwrap_or_default().to_string();
@@ -262,7 +275,9 @@ impl Message {
             subject: value["subject"].as_str().map(str::to_string),
             web_url: value["webUrl"].as_str().map(str::to_string),
             deleted: !value["deletedDateTime"].is_null(),
-            has_attachments: value["attachments"].as_array().into_iter().flatten().any(|item| adaptive_card(item).is_none()),
+            has_attachments: value["attachments"].as_array().into_iter().flatten()
+                .any(|item| adaptive_card(item).is_none() && file_attachment(item).is_none()),
+            files: value["attachments"].as_array().into_iter().flatten().filter_map(file_attachment).take(20).collect(),
             cards: value["attachments"].as_array().into_iter().flatten().filter_map(adaptive_card).take(5).collect(),
             reactions: reactions(value, user_id),
             reply_count: value["replies"].as_array().map(Vec::len),
@@ -923,6 +938,12 @@ mod tests {
         let message = Message::from_graph(&json!({"id": "1", "attachments": [{"contentType": CONNECTOR_CARD, "content": connector}]}), None).unwrap();
         assert!(!message.has_attachments);
         assert_eq!(message.cards[0]["type"], "MessageCard");
+        let file = Message::from_graph(&json!({"id": "1", "attachments": [
+            {"contentType": "reference", "contentUrl": "https://contoso.sharepoint.com/a/b.zip", "name": "b.zip"},
+            {"contentType": "reference", "contentUrl": "javascript:alert(1)", "name": "x"}]}), None).unwrap();
+        assert_eq!(file.files.len(), 1);
+        assert_eq!(file.files[0].name, "b.zip");
+        assert!(file.has_attachments);
         assert!(Message::from_graph(&json!({}), None).is_err());
     }
     #[test]

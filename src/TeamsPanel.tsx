@@ -10,6 +10,7 @@ import "./TeamsPanel.css";
 import TeamsComposer, { ComposerDraft, emptyDraft } from "./TeamsComposer";
 import MessageBody from "./MessageBody";
 import AdaptiveCard from "./AdaptiveCard";
+import FileIcon from "./FileIcon";
 import ChannelTabs, { ACTIVITY_TAB_ID, CHATS_TAB_ID, NEWS_TAB_ID } from "./ChannelTabs";
 import ActivityFeed from "./ActivityFeed";
 import { conversationTarget, teamsData } from "./teamsData";
@@ -431,6 +432,10 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
             <MessageBody body={message.body} bodyType={message.body_type} deleted={message.deleted}
               teamId={channel.teamId} channelId={channel.channelId} chatId={channel.chatId ?? null} />
             {!message.deleted && message.cards?.map((card, index) => <AdaptiveCard key={index} card={card} onOpen={openLink} />)}
+            {!message.deleted && message.files?.map((file, index) => <button key={index} type="button" className="teams-file"
+              data-tooltip={file.name} onClick={() => openLink(file.url)}>
+              <span className="teams-file-icon" aria-hidden="true"><FileIcon name={file.name} /></span><span className="teams-file-name">{file.name}</span>
+              <span className="teams-file-open" aria-hidden="true">↗</span></button>)}
             {!message.deleted && message.has_attachments && <button className="teams-link" onClick={() => openInTeams(message.web_url ?? channel.url)}>첨부 파일 · Teams에서 보기 ↗</button>}
             </div>
             {!message.deleted && (message.reactions?.length || reacting === message.id || reactionPicker === message.id) ? <div className="teams-reactions" aria-label="메시지 반응" aria-busy={reacting === message.id}>
