@@ -35,6 +35,7 @@ export type TeamsMessage = {
   // Adaptive Card JSON from Workflows/bot posts.
   cards?: Record<string, any>[];
   files?: { name: string; url: string }[];
+  quotes?: { author: string | null; preview: string; time: number | null }[];
   reactions: TeamsReaction[];
   reply_count: number | null;
   other_activity: number;

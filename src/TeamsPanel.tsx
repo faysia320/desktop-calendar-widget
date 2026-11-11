@@ -429,6 +429,9 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
             <header>{!message.mine && <strong>{message.author}</strong>}<time dateTime={message.created_at}>{messageTime(message.created_at)}</time></header>
             <div className="teams-message-bubble">
             {!message.deleted && message.subject && <h3>{message.subject}</h3>}
+            {!message.deleted && message.quotes?.map((quote, index) => <blockquote key={index} className="teams-quote">
+              <header>{quote.author && <strong>{quote.author}</strong>}{quote.time && <time>{messageTime(new Date(quote.time).toISOString())}</time>}</header>
+              <p>{quote.preview}</p></blockquote>)}
             <MessageBody body={message.body} bodyType={message.body_type} deleted={message.deleted}
               teamId={channel.teamId} channelId={channel.channelId} chatId={channel.chatId ?? null} />
             {!message.deleted && message.cards?.map((card, index) => <AdaptiveCard key={index} card={card} onOpen={openLink} />)}

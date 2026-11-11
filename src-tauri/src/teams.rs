@@ -116,6 +116,7 @@ pub struct Message {
     // Adaptive Card payloads (e.g. Workflows posts), rendered in place of the attachment link.
     cards: Vec<Value>,
     files: Vec<FileAttachment>,
+    quotes: Vec<Quote>,
     reactions: Vec<Reaction>,
     reply_count: Option<usize>,
     mine: bool,
@@ -257,6 +258,20 @@ fn file_attachment(attachment: &Value) -> Option<FileAttachment> {
     Some(FileAttachment { name, url })
 }
 
+#[derive(Serialize)]
+pub struct Quote { author: Option<String>, preview: String, time: Option<i64> }
+
+// Quoted replies arrive as a messageReference attachment with a short preview.
+fn quote(attachment: &Value) -> Option<Quote> {
+    if attachment["contentType"].as_str() != Some("messageReference") { return None; }
+    let content: Value = serde_json::from_str(attachment["content"].as_str()?).ok()?;
+    let author = content.pointer("/messageSender/user/displayName").or_else(|| content.pointer("/messageSender/application/displayName"))
+        .and_then(Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_string);
+    // Teams message IDs are their creation time in epoch milliseconds.
+    let time = content["messageId"].as_str().and_then(|id| id.parse::<i64>().ok()).filter(|time| *time > 1_000_000_000_000);
+    Some(Quote { author, preview: content["messagePreview"].as_str().unwrap_or_default().chars().take(500).collect(), time })
+}
+
 impl Message {
     fn from_graph(value: &Value, user_id: Option<&str>) -> Result<Self, String> {
         let text = |key: &str| value[key].as_str().unwrap_or_default().to_string();
@@ -276,7 +291,8 @@ impl Message {
             web_url: value["webUrl"].as_str().map(str::to_string),
             deleted: !value["deletedDateTime"].is_null(),
             has_attachments: value["attachments"].as_array().into_iter().flatten()
-                .any(|item| adaptive_card(item).is_none() && file_attachment(item).is_none()),
+                .any(|item| adaptive_card(item).is_none() && file_attachment(item).is_none() && quote(item).is_none()),
+            quotes: value["attachments"].as_array().into_iter().flatten().filter_map(quote).take(5).collect(),
             files: value["attachments"].as_array().into_iter().flatten().filter_map(file_attachment).take(20).collect(),
             cards: value["attachments"].as_array().into_iter().flatten().filter_map(adaptive_card).take(5).collect(),
             reactions: reactions(value, user_id),
@@ -944,6 +960,11 @@ mod tests {
         assert_eq!(file.files.len(), 1);
         assert_eq!(file.files[0].name, "b.zip");
         assert!(file.has_attachments);
+        let reference = json!({"messageId":"1762823160000","messagePreview":"기본 방향임","messageSender":{"user":{"displayName":"이하늘"}}}).to_string();
+        let reply = Message::from_graph(&json!({"id": "1", "attachments": [{"contentType": "messageReference", "content": reference}]}), None).unwrap();
+        assert!(!reply.has_attachments);
+        assert_eq!(reply.quotes[0].author.as_deref(), Some("이하늘"));
+        assert_eq!(reply.quotes[0].time, Some(1762823160000));
         assert!(Message::from_graph(&json!({}), None).is_err());
     }
     #[test]
