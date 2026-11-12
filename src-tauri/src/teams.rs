@@ -477,8 +477,13 @@ pub async fn teams_send(
     parent_id: Option<String>,
     content: String,
     mentions: Option<Vec<SendMention>>,
+    images: Option<Vec<SendImage>>,
 ) -> Result<Message, String> {
-    let body = message_body(&content, mentions.unwrap_or_default())?;
+    let images = images.unwrap_or_default();
+    let body = if images.is_empty() || !content.trim().is_empty() {
+        message_body(&content, mentions.unwrap_or_default())?
+    } else { json!({"body":{"contentType":"html","content":""}}) };
+    let body = attach_images(body, &images)?;
     let url = conversation_url(&team_id, &channel_id, chat_id.as_deref(), parent_id.as_deref())?;
     let token = session.access_token().await?;
     // Never retry a POST automatically: the server may have accepted it before a timeout.
@@ -491,6 +496,39 @@ pub async fn teams_send(
     let mut message = Message::from_graph(&graph_response(response).await?, None)?;
     if parent_id.is_none() && chat_id.is_none() { message.reply_count = Some(0); }
     Ok(message)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendImage {
+    content_type: String,
+    data: String,
+}
+
+const MAX_IMAGES: usize = 5;
+const MAX_IMAGE_BASE64: usize = 6 * 1024 * 1024;
+
+// Inline images are sent as hostedContents referenced from the HTML body.
+fn attach_images(mut body: Value, images: &[SendImage]) -> Result<Value, String> {
+    if images.is_empty() { return Ok(body); }
+    if images.len() > MAX_IMAGES { return Err(format!("이미지는 한 메시지에 최대 {MAX_IMAGES}장까지 보낼 수 있습니다.")); }
+    let mut html = if body["body"]["contentType"] == "html" {
+        body["body"]["content"].as_str().unwrap_or_default().to_string()
+    } else { html_escape(body["body"]["content"].as_str().unwrap_or_default()) };
+    let mut hosted = Vec::new();
+    for (index, image) in images.iter().enumerate() {
+        if !matches!(image.content_type.as_str(), "image/png" | "image/jpeg" | "image/gif")
+            || image.data.is_empty() || image.data.len() > MAX_IMAGE_BASE64
+            || !image.data.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+        { return Err("지원하지 않거나 너무 큰 이미지입니다. (PNG·JPEG·GIF, 4MB 이하)".into()); }
+        let id = index + 1;
+        html.push_str(&format!("<br><img src=\"../hostedContents/{id}/$value\" style=\"max-width:100%\">"));
+        hosted.push(json!({"@microsoft.graph.temporaryId": id.to_string(),
+            "contentBytes": image.data, "contentType": image.content_type}));
+    }
+    body["body"] = json!({"contentType":"html","content":html});
+    body["hostedContents"] = Value::Array(hosted);
+    Ok(body)
 }
 
 #[derive(Deserialize)]

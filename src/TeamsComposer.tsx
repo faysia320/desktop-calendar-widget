@@ -7,7 +7,18 @@ export type Mention = { start: number; end: number; userId: string; displayName:
 export type ComposerDraft = { text: string; mentions: Mention[] };
 type Member = { userId: string; displayName: string; email: string };
 type Query = { start: number; end: number; text: string };
-export const emptyDraft = (): ComposerDraft => ({ text: "", mentions: [] });
+export type PastedImage = { id: number; contentType: string; data: string; url: string };
+const MAX_IMAGES = 5;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+let imageId = 0;
+const readImage = (file: File) => new Promise<PastedImage>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve({ id: ++imageId, contentType: file.type,
+    data: String(reader.result).split(",")[1] ?? "", url: URL.createObjectURL(file) });
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(file);
+});
+export const emptyDraft =(): ComposerDraft => ({ text: "", mentions: [] });
 
 // Preserve mention identities only when their exact text survives an edit.
 export function editMentions(previous: ComposerDraft, text: string): Mention[] {
@@ -28,9 +39,31 @@ export function editMentions(previous: ComposerDraft, text: string): Mention[] {
 export default memo(function TeamsComposer({ channel, reply, initialDraft, sending, error, onDraftChange, onSend, onReconnect }: {
   channel: TeamsChannel; reply: boolean; initialDraft: ComposerDraft; sending: boolean; error: string;
   onDraftChange: (draft: ComposerDraft) => void;
-  onSend: (draft: ComposerDraft) => Promise<boolean>;
+  onSend: (draft: ComposerDraft, images: PastedImage[]) => Promise<boolean>;
   onReconnect: () => void;
 }) {
+  const [images, setImages] = useState<PastedImage[]>([]);
+  const imagesRef = useRef<PastedImage[]>([]);
+  const [imageError, setImageError] = useState("");
+  imagesRef.current = images;
+  useEffect(() => () => imagesRef.current.forEach((image) => URL.revokeObjectURL(image.url)), []);
+
+  async function paste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    const allowed = files.filter((file) => ["image/png", "image/jpeg", "image/gif"].includes(file.type) && file.size <= MAX_IMAGE_BYTES);
+    const room = MAX_IMAGES - imagesRef.current.length;
+    setImageError(allowed.length < files.length ? "PNG·JPEG·GIF 4MB 이하 이미지만 붙여넣을 수 있습니다."
+      : allowed.length > room ? `이미지는 최대 ${MAX_IMAGES}장까지 첨부할 수 있습니다.` : "");
+    try {
+      const read = await Promise.all(allowed.slice(0, Math.max(0, room)).map(readImage));
+      if (mounted.current) setImages((old) => [...old, ...read].slice(0, MAX_IMAGES));
+    } catch { setImageError("이미지를 읽을 수 없습니다."); }
+  }
+  function removeImage(id: number) {
+    setImages((old) => old.filter((image) => { if (image.id === id) URL.revokeObjectURL(image.url); return image.id !== id; }));
+  }
   const input = useRef<HTMLTextAreaElement>(null);
   const startingText = useRef(initialDraft.text);
   const current = useRef(initialDraft);
@@ -114,14 +147,17 @@ export default memo(function TeamsComposer({ channel, reply, initialDraft, sendi
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (composing.current || sending || submitting.current || !current.current.text.trim()) return;
+    if (composing.current || sending || submitting.current || (!current.current.text.trim() && !imagesRef.current.length)) return;
     const snapshot = current.current;
+    const sentImages = imagesRef.current;
     submitting.current = true;
     setQuery(null);
     try {
-      if (await onSend(snapshot) && mounted.current && current.current === snapshot) {
+      if (await onSend(snapshot, sentImages) && mounted.current && current.current === snapshot) {
         if (input.current) input.current.value = "";
         remember("", []);
+        sentImages.forEach((image) => URL.revokeObjectURL(image.url));
+        setImages((old) => old.filter((image) => !sentImages.includes(image)));
         input.current?.focus({ preventScroll: true });
       }
     } finally { submitting.current = false; }
@@ -149,7 +185,8 @@ export default memo(function TeamsComposer({ channel, reply, initialDraft, sendi
       aria-label={reply ? "답글 입력" : `${channel.name} 메시지 입력`} aria-autocomplete="list"
       aria-controls={query ? "teams-mention-list" : undefined}
       aria-activedescendant={query && matches.length ? `teams-mention-${selectedIndex}` : undefined}
-      disabled={sending} placeholder={reply ? "답글을 입력하세요 (@ 멘션)" : `${channel.name}에 메시지 보내기 (@ 멘션)`}
+      onPaste={paste}
+      disabled={sending} placeholder={reply ? "답글을 입력하세요 (@ 멘션 · 이미지 붙여넣기)" : `${channel.name}에 메시지 보내기 (@ 멘션 · 이미지 붙여넣기)`}
       data-tooltip="Enter로 전송 · Shift+Enter로 줄바꿈"
       onChange={(event) => { remember(event.currentTarget.value); if (!composing.current) updateQuery(event.currentTarget); }}
       onSelect={(event) => updateQuery(event.currentTarget)}
@@ -170,9 +207,12 @@ export default memo(function TeamsComposer({ channel, reply, initialDraft, sendi
           event.currentTarget.form?.requestSubmit();
         }
       }} />
-    {error && <p className="error" role="alert">{error}</p>}
+    {images.length > 0 && <div className="teams-compose-images">{images.map((image) => <span key={image.id}>
+      <img src={image.url} alt="첨부 이미지 미리보기" />
+      <button type="button" aria-label="이미지 제거" disabled={sending} onClick={() => removeImage(image.id)}>×</button></span>)}</div>}
+    {(error || imageError) && <p className="error" role="alert">{error || imageError}</p>}
     <div className="teams-compose-footer"><button className="primary" type="submit"
-      data-tooltip="Enter로 전송 · Shift+Enter로 줄바꿈" disabled={sending || !hasText}>{sending ? "전송 중…" : "보내기"}</button></div>
+      data-tooltip="Enter로 전송 · Shift+Enter로 줄바꿈" disabled={sending || (!hasText && !images.length)}>{sending ? "전송 중…" : "보내기"}</button></div>
     {mentions.length > 0 && <div className="teams-selected-mentions" aria-label="선택된 멘션">멘션: {mentions.map((mention, index) =>
       <span key={`${mention.start}:${mention.userId}`}>{index > 0 && ", "}{mention.displayName}</span>)}</div>}
   </form>;

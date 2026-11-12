@@ -7,7 +7,7 @@ import {
   chatChannel, decodeChannels, parseChannelLink, readChannels,
 } from "./teams";
 import "./TeamsPanel.css";
-import TeamsComposer, { ComposerDraft, emptyDraft } from "./TeamsComposer";
+import TeamsComposer, { ComposerDraft, PastedImage, emptyDraft } from "./TeamsComposer";
 import MessageBody from "./MessageBody";
 import AdaptiveCard from "./AdaptiveCard";
 import FileIcon from "./FileIcon";
@@ -312,8 +312,8 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
     return () => { window.removeEventListener("blur", disengage); document.removeEventListener("visibilitychange", disengage); };
   }, []);
 
-  async function send(snapshot: ComposerDraft): Promise<boolean> {
-    if (!snapshot.text.trim() || sendPending.current) return false;
+  async function send(snapshot: ComposerDraft, images: PastedImage[] = []): Promise<boolean> {
+    if ((!snapshot.text.trim() && !images.length) || sendPending.current) return false;
     sendPending.current = true;
     reactionVersion.current++;
     teamsData.mutate(channel, parentId);
@@ -323,6 +323,7 @@ function Conversation({ channel, draft, onDraftChange, onReconnect, onBack, focu
     try {
       const sent = await invoke<TeamsMessage>("teams_send", {
         ...conversationTarget(channel), parentId, content: snapshot.text, mentions: snapshot.mentions,
+        images: images.map(({ contentType, data }) => ({ contentType, data })),
       });
       teamsData.mutate(channel, parentId);
       if (parentId) teamsData.mutate(channel, null);
